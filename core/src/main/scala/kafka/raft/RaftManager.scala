@@ -200,6 +200,7 @@ class KafkaRaftManager[T](
       metrics,
       expirationService,
       logContext,
+      metaProperties.clusterId.toString,
       OptionalInt.of(config.nodeId),
       raftConfig
     )
@@ -270,7 +271,7 @@ class KafkaRaftManager[T](
     val maxInflightRequestsPerConnection = 1
     val reconnectBackoffMs = 50
     val reconnectBackoffMsMs = 500
-    val discoverBrokerVersions = false
+    val discoverBrokerVersions = true
 
     new NetworkClient(
       selector,

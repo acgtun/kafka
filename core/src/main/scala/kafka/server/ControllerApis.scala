@@ -63,7 +63,7 @@ class ControllerApis(val requestChannel: RequestChannel,
                      val controllerNodes: Seq[Node]) extends ApiRequestHandler with Logging {
 
   val authHelper = new AuthHelper(authorizer)
-  val requestHelper = new RequestHandlerHelper(requestChannel, quotas, time, s"[ControllerApis id=${config.nodeId}] ")
+  val requestHelper = new RequestHandlerHelper(requestChannel, quotas, time)
 
   var supportedApiKeys = Set(
     ApiKeys.FETCH,
@@ -173,7 +173,7 @@ class ControllerApis(val requestChannel: RequestChannel,
           .setRack(node.rack))
       }
       metadataResponseData.setClusterId(metaProperties.clusterId.toString)
-      if (controller.curClaimEpoch() > 0) {
+      if (controller.isActive()) {
         metadataResponseData.setControllerId(config.nodeId)
       } else {
         metadataResponseData.setControllerId(MetadataResponse.NO_CONTROLLER_ID)
