@@ -69,10 +69,6 @@ Generate coverage for a single module, i.e.:
 ### Building a binary release gzipped tar ball ###
     ./gradlew clean releaseTarGz
 
-The above command will fail if you haven't set up the signing key. To bypass signing the artifact, you can run:
-
-    ./gradlew clean releaseTarGz -x signArchives
-
 The release file can be found inside `./core/build/distributions/`.
 
 ### Building auto generated messages ###
@@ -80,6 +76,15 @@ Sometimes it is only necessary to rebuild the RPC auto-generated message data wh
 fail due to code changes. You can just run:
  
     ./gradlew processMessages processTestMessages
+
+### Running a Kafka broker with ZooKeeper
+
+    ./bin/zookeeper-server-start.sh config/zookeeper.properties
+    ./bin/kafka-server-start.sh config/server.properties
+
+### Running a Kafka broker in self-managed mode
+
+See [config/self-managed/README.md](https://github.com/apache/kafka/blob/trunk/config/self-managed/README.md).
 
 ### Cleaning the build ###
     ./gradlew clean
@@ -125,6 +130,12 @@ build directory (`${project_dir}/bin`) clashes with Kafka's scripts directory an
 to avoid known issues with this configuration.
 
 ### Publishing the jar for all version of Scala and for all projects to maven ###
+The recommended command is:
+
+    ./gradlewAll publish
+
+For backwards compatibility, the following also works:
+
     ./gradlewAll uploadArchives
 
 Please note for this to work you should create/update `${GRADLE_USER_HOME}/gradle.properties` (typically, `~/.gradle/gradle.properties`) and assign the following variables
@@ -167,6 +178,12 @@ Please note for this to work you should create/update user maven settings (typic
 
 
 ### Installing the jars to the local Maven repository ###
+The recommended command is:
+
+    ./gradlewAll publishToMavenLocal
+
+For backwards compatibility, the following also works:
+
     ./gradlewAll install
 
 ### Building the test jar ###

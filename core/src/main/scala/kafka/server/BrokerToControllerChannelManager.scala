@@ -40,6 +40,7 @@ trait ControllerNodeProvider {
   def get(): Option[Node]
   def listenerName: ListenerName
   def securityProtocol: SecurityProtocol
+  def saslMechanism: String
 }
 
 object MetadataCacheControllerNodeProvider {
@@ -56,7 +57,8 @@ object MetadataCacheControllerNodeProvider {
     new MetadataCacheControllerNodeProvider(
       metadataCache,
       listenerName,
-      securityProtocol
+      securityProtocol,
+      config.saslMechanismInterBrokerProtocol
     )
   }
 }
@@ -64,7 +66,8 @@ object MetadataCacheControllerNodeProvider {
 class MetadataCacheControllerNodeProvider(
   val metadataCache: kafka.server.MetadataCache,
   val listenerName: ListenerName,
-  val securityProtocol: SecurityProtocol
+  val securityProtocol: SecurityProtocol,
+  val saslMechanism: String
 ) extends ControllerNodeProvider {
   override def get(): Option[Node] = {
     metadataCache.getControllerId
@@ -78,9 +81,16 @@ object RaftControllerNodeProvider {
             config: KafkaConfig,
             controllerQuorumVoterNodes: Seq[Node]): RaftControllerNodeProvider = {
 
-    val listenerName = new ListenerName(config.controllerListenerNames.head)
-    val securityProtocol = config.listenerSecurityProtocolMap.getOrElse(listenerName, SecurityProtocol.forName(listenerName.value()))
-    new RaftControllerNodeProvider(metaLogManager, controllerQuorumVoterNodes, listenerName, securityProtocol)
+    val controllerListenerName = new ListenerName(config.controllerListenerNames.head)
+    val controllerSecurityProtocol = config.listenerSecurityProtocolMap.getOrElse(controllerListenerName, SecurityProtocol.forName(controllerListenerName.value()))
+    val controllerSaslMechanism = config.saslMechanismControllerProtocol
+    new RaftControllerNodeProvider(
+      metaLogManager,
+      controllerQuorumVoterNodes,
+      controllerListenerName,
+      controllerSecurityProtocol,
+      controllerSaslMechanism
+    )
   }
 }
 
@@ -91,7 +101,8 @@ object RaftControllerNodeProvider {
 class RaftControllerNodeProvider(val metaLogManager: MetaLogManager,
                                  controllerQuorumVoterNodes: Seq[Node],
                                  val listenerName: ListenerName,
-                                 val securityProtocol: SecurityProtocol
+                                 val securityProtocol: SecurityProtocol,
+                                 val saslMechanism: String
                                 ) extends ControllerNodeProvider with Logging {
   val idToNode = controllerQuorumVoterNodes.map(node => node.id() -> node).toMap
 
@@ -157,7 +168,7 @@ class BrokerToControllerChannelManagerImpl(
   threadNamePrefix: Option[String],
   retryTimeoutMs: Long
 ) extends BrokerToControllerChannelManager with Logging {
-  private val logContext = new LogContext(s"[broker-${config.brokerId}-to-controller] ")
+  private val logContext = new LogContext(s"[BrokerToControllerChannelManager broker=${config.brokerId} name=$channelName] ")
   private val manualMetadataUpdater = new ManualMetadataUpdater()
   private val apiVersions = new ApiVersions()
   private val currentNodeApiVersions = NodeApiVersions.create()
@@ -179,7 +190,7 @@ class BrokerToControllerChannelManagerImpl(
         JaasContext.Type.SERVER,
         config,
         controllerNodeProvider.listenerName,
-        config.saslMechanismInterBrokerProtocol,
+        controllerNodeProvider.saslMechanism,
         time,
         config.saslInterBrokerHandshakeRequestEnable,
         logContext
@@ -215,8 +226,8 @@ class BrokerToControllerChannelManagerImpl(
       )
     }
     val threadName = threadNamePrefix match {
-      case None => s"broker-${config.brokerId}-to-controller-send-thread"
-      case Some(name) => s"$name:broker-${config.brokerId}-to-controller-send-thread"
+      case None => s"BrokerToControllerChannelManager broker=${config.brokerId} name=$channelName"
+      case Some(name) => s"$name:BrokerToControllerChannelManager broker=${config.brokerId} name=$channelName"
     }
 
     new BrokerToControllerRequestThread(
@@ -284,6 +295,10 @@ class BrokerToControllerRequestThread(
   private val requestQueue = new LinkedBlockingDeque[BrokerToControllerQueueItem]()
   private val activeController = new AtomicReference[Node](null)
 
+  // Used for testing
+  @volatile
+  private[server] var started = false
+
   def activeControllerAddress(): Option[Node] = {
     Option(activeController.get())
   }
@@ -293,6 +308,9 @@ class BrokerToControllerRequestThread(
   }
 
   def enqueue(request: BrokerToControllerQueueItem): Unit = {
+    if (!started) {
+      throw new IllegalStateException("Cannot enqueue a request if the request thread is not running")
+    }
     requestQueue.add(request)
     if (activeControllerAddress().isDefined) {
       wakeup()
@@ -368,5 +386,10 @@ class BrokerToControllerRequestThread(
           super.pollOnce(maxTimeoutMs = 100)
       }
     }
+  }
+
+  override def start(): Unit = {
+    super.start()
+    started = true
   }
 }
