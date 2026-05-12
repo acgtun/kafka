@@ -25,8 +25,10 @@ import org.slf4j.helpers.MessageFormatter;
 import org.slf4j.spi.LocationAwareLogger;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * This class provides a way to instrument loggers with a common context which can be used to
@@ -37,9 +39,17 @@ import java.util.Map;
  *
  * <p>In addition to the string prefix (which is prepended to every log message for human-readable
  * output), a structured context map can be provided. When present, the context map entries are
- * pushed to the SLF4J MDC before each log call, making them available as first-class fields in
- * structured logging layouts (e.g., JSON). This enables machine-parseable log output for AI-driven
- * debugging and log analysis tools.
+ * pushed to the SLF4J MDC before each log call and restored after, making them available as
+ * first-class fields in structured logging layouts (e.g., JSON). This enables machine-parseable
+ * log output for AI-driven debugging and log analysis tools.
+ *
+ * <p><b>Thread safety:</b> MDC is backed by a ThreadLocal, so concurrent threads using the same
+ * {@code LogContext} instance will not interfere with each other. Pre-existing MDC values are
+ * saved before each log call and restored afterwards.
+ *
+ * <p><b>Async logging:</b> Log4j2's default {@code AsyncAppender} snapshots MDC at enqueue time,
+ * so structured context is preserved. Custom async implementations that do not snapshot MDC may
+ * lose context fields.
  */
 public class LogContext {
 
@@ -57,9 +67,10 @@ public class LogContext {
      * as structured fields in JSON logging layouts.
      *
      * @param logPrefix   the string prefix for log messages (may be null or empty)
-     * @param contextMap  structured key-value pairs for MDC (may be empty but not null)
+     * @param contextMap  structured key-value pairs for MDC (must not be null; may be empty)
      */
     public LogContext(String logPrefix, Map<String, String> contextMap) {
+        Objects.requireNonNull(contextMap, "contextMap must not be null");
         this.logPrefix = logPrefix == null ? "" : logPrefix;
         this.contextMap = contextMap.isEmpty()
                 ? Collections.emptyMap()
@@ -101,10 +112,12 @@ public class LogContext {
     private abstract static class AbstractKafkaLogger implements Logger {
         private final String prefix;
         private final Map<String, String> contextMap;
+        private final boolean hasContext;
 
         protected AbstractKafkaLogger(final String prefix, final Map<String, String> contextMap) {
             this.prefix = prefix;
             this.contextMap = contextMap;
+            this.hasContext = !contextMap.isEmpty();
         }
 
         protected String addPrefix(final String message) {
@@ -112,24 +125,40 @@ public class LogContext {
         }
 
         /**
-         * Push context map entries to MDC. Returns true if entries were pushed (and must be popped).
+         * Push context map entries to MDC, saving any pre-existing values so they can be
+         * restored by {@link #popMdc(Map)}. Returns the saved values, or {@code null} if
+         * there is no context to push.
+         *
+         * <p>This save/restore pattern ensures that pre-existing MDC entries (e.g., from
+         * Kafka Connect's {@code LoggingContext} or user-set values) are not clobbered.
          */
-        protected boolean pushMdc() {
-            if (contextMap.isEmpty()) {
-                return false;
+        protected Map<String, String> pushMdc() {
+            if (!hasContext) {
+                return null;
             }
+            Map<String, String> saved = new HashMap<>(contextMap.size());
             for (Map.Entry<String, String> entry : contextMap.entrySet()) {
+                saved.put(entry.getKey(), MDC.get(entry.getKey()));
                 MDC.put(entry.getKey(), entry.getValue());
             }
-            return true;
+            return saved;
         }
 
         /**
-         * Remove context map entries from MDC.
+         * Restore MDC to the state captured by {@link #pushMdc()}.
+         *
+         * @param saved the saved MDC values returned by {@link #pushMdc()}; may be {@code null}
          */
-        protected void popMdc() {
-            for (String key : contextMap.keySet()) {
-                MDC.remove(key);
+        protected void popMdc(Map<String, String> saved) {
+            if (saved == null) {
+                return;
+            }
+            for (Map.Entry<String, String> entry : saved.entrySet()) {
+                if (entry.getValue() == null) {
+                    MDC.remove(entry.getKey());
+                } else {
+                    MDC.put(entry.getKey(), entry.getValue());
+                }
             }
         }
     }
@@ -198,6 +227,8 @@ public class LogContext {
         public boolean isErrorEnabled(Marker marker) {
             return logger.isErrorEnabled(marker);
         }
+
+        // --- trace (guarded) ---
 
         @Override
         public void trace(String message) {
@@ -269,6 +300,8 @@ public class LogContext {
             }
         }
 
+        // --- debug (guarded) ---
+
         @Override
         public void debug(String message) {
             if (logger.isDebugEnabled()) {
@@ -339,154 +372,220 @@ public class LogContext {
             }
         }
 
-        @Override
-        public void warn(String message) {
-            writeLog(null, LocationAwareLogger.WARN_INT, message, null, null);
-        }
-
-        @Override
-        public void warn(String format, Object arg) {
-            writeLog(null, LocationAwareLogger.WARN_INT, format, new Object[]{arg}, null);
-        }
-
-        @Override
-        public void warn(String message, Object arg1, Object arg2) {
-            writeLog(null, LocationAwareLogger.WARN_INT, message, new Object[]{arg1, arg2}, null);
-        }
-
-        @Override
-        public void warn(String format, Object... args) {
-            writeLog(null, LocationAwareLogger.WARN_INT, format, args, null);
-        }
-
-        @Override
-        public void warn(String msg, Throwable t) {
-            writeLog(null, LocationAwareLogger.WARN_INT, msg, null, t);
-        }
-
-        @Override
-        public void warn(Marker marker, String msg) {
-            writeLog(marker, LocationAwareLogger.WARN_INT, msg, null, null);
-        }
-
-        @Override
-        public void warn(Marker marker, String format, Object arg) {
-            writeLog(marker, LocationAwareLogger.WARN_INT, format, new Object[]{arg}, null);
-        }
-
-        @Override
-        public void warn(Marker marker, String format, Object arg1, Object arg2) {
-            writeLog(marker, LocationAwareLogger.WARN_INT, format, new Object[]{arg1, arg2}, null);
-        }
-
-        @Override
-        public void warn(Marker marker, String format, Object... arguments) {
-            writeLog(marker, LocationAwareLogger.WARN_INT, format, arguments, null);
-        }
-
-        @Override
-        public void warn(Marker marker, String msg, Throwable t) {
-            writeLog(marker, LocationAwareLogger.WARN_INT, msg, null, t);
-        }
-
-        @Override
-        public void error(String message) {
-            writeLog(null, LocationAwareLogger.ERROR_INT, message, null, null);
-        }
-
-        @Override
-        public void error(String format, Object arg) {
-            writeLog(null, LocationAwareLogger.ERROR_INT, format, new Object[]{arg}, null);
-        }
-
-        @Override
-        public void error(String format, Object arg1, Object arg2) {
-            writeLog(null, LocationAwareLogger.ERROR_INT, format, new Object[]{arg1, arg2}, null);
-        }
-
-        @Override
-        public void error(String format, Object... args) {
-            writeLog(null, LocationAwareLogger.ERROR_INT, format, args, null);
-        }
-
-        @Override
-        public void error(String msg, Throwable t) {
-            writeLog(null, LocationAwareLogger.ERROR_INT, msg, null, t);
-        }
-
-        @Override
-        public void error(Marker marker, String msg) {
-            writeLog(marker, LocationAwareLogger.ERROR_INT, msg, null, null);
-        }
-
-        @Override
-        public void error(Marker marker, String format, Object arg) {
-            writeLog(marker, LocationAwareLogger.ERROR_INT, format, new Object[]{arg}, null);
-        }
-
-        @Override
-        public void error(Marker marker, String format, Object arg1, Object arg2) {
-            writeLog(marker, LocationAwareLogger.ERROR_INT, format, new Object[]{arg1, arg2}, null);
-        }
-
-        @Override
-        public void error(Marker marker, String format, Object... arguments) {
-            writeLog(marker, LocationAwareLogger.ERROR_INT, format, arguments, null);
-        }
-
-        @Override
-        public void error(Marker marker, String msg, Throwable t) {
-            writeLog(marker, LocationAwareLogger.ERROR_INT, msg, null, t);
-        }
+        // --- info (now guarded — M-2 fix) ---
 
         @Override
         public void info(String msg) {
-            writeLog(null, LocationAwareLogger.INFO_INT, msg, null, null);
+            if (logger.isInfoEnabled()) {
+                writeLog(null, LocationAwareLogger.INFO_INT, msg, null, null);
+            }
         }
 
         @Override
         public void info(String format, Object arg) {
-            writeLog(null, LocationAwareLogger.INFO_INT, format, new Object[]{arg}, null);
+            if (logger.isInfoEnabled()) {
+                writeLog(null, LocationAwareLogger.INFO_INT, format, new Object[]{arg}, null);
+            }
         }
 
         @Override
         public void info(String format, Object arg1, Object arg2) {
-            writeLog(null, LocationAwareLogger.INFO_INT, format, new Object[]{arg1, arg2}, null);
+            if (logger.isInfoEnabled()) {
+                writeLog(null, LocationAwareLogger.INFO_INT, format, new Object[]{arg1, arg2}, null);
+            }
         }
 
         @Override
         public void info(String format, Object... args) {
-            writeLog(null, LocationAwareLogger.INFO_INT, format, args, null);
+            if (logger.isInfoEnabled()) {
+                writeLog(null, LocationAwareLogger.INFO_INT, format, args, null);
+            }
         }
 
         @Override
         public void info(String msg, Throwable t) {
-            writeLog(null, LocationAwareLogger.INFO_INT, msg, null, t);
+            if (logger.isInfoEnabled()) {
+                writeLog(null, LocationAwareLogger.INFO_INT, msg, null, t);
+            }
         }
 
         @Override
         public void info(Marker marker, String msg) {
-            writeLog(marker, LocationAwareLogger.INFO_INT, msg, null, null);
+            if (logger.isInfoEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.INFO_INT, msg, null, null);
+            }
         }
 
         @Override
         public void info(Marker marker, String format, Object arg) {
-            writeLog(marker, LocationAwareLogger.INFO_INT, format, new Object[]{arg}, null);
+            if (logger.isInfoEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.INFO_INT, format, new Object[]{arg}, null);
+            }
         }
 
         @Override
         public void info(Marker marker, String format, Object arg1, Object arg2) {
-            writeLog(marker, LocationAwareLogger.INFO_INT, format, new Object[]{arg1, arg2}, null);
+            if (logger.isInfoEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.INFO_INT, format, new Object[]{arg1, arg2}, null);
+            }
         }
 
         @Override
         public void info(Marker marker, String format, Object... arguments) {
-            writeLog(marker, LocationAwareLogger.INFO_INT, format, arguments, null);
+            if (logger.isInfoEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.INFO_INT, format, arguments, null);
+            }
         }
 
         @Override
         public void info(Marker marker, String msg, Throwable t) {
-            writeLog(marker, LocationAwareLogger.INFO_INT, msg, null, t);
+            if (logger.isInfoEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.INFO_INT, msg, null, t);
+            }
+        }
+
+        // --- warn (now guarded — M-2 fix) ---
+
+        @Override
+        public void warn(String message) {
+            if (logger.isWarnEnabled()) {
+                writeLog(null, LocationAwareLogger.WARN_INT, message, null, null);
+            }
+        }
+
+        @Override
+        public void warn(String format, Object arg) {
+            if (logger.isWarnEnabled()) {
+                writeLog(null, LocationAwareLogger.WARN_INT, format, new Object[]{arg}, null);
+            }
+        }
+
+        @Override
+        public void warn(String message, Object arg1, Object arg2) {
+            if (logger.isWarnEnabled()) {
+                writeLog(null, LocationAwareLogger.WARN_INT, message, new Object[]{arg1, arg2}, null);
+            }
+        }
+
+        @Override
+        public void warn(String format, Object... args) {
+            if (logger.isWarnEnabled()) {
+                writeLog(null, LocationAwareLogger.WARN_INT, format, args, null);
+            }
+        }
+
+        @Override
+        public void warn(String msg, Throwable t) {
+            if (logger.isWarnEnabled()) {
+                writeLog(null, LocationAwareLogger.WARN_INT, msg, null, t);
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String msg) {
+            if (logger.isWarnEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.WARN_INT, msg, null, null);
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String format, Object arg) {
+            if (logger.isWarnEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.WARN_INT, format, new Object[]{arg}, null);
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String format, Object arg1, Object arg2) {
+            if (logger.isWarnEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.WARN_INT, format, new Object[]{arg1, arg2}, null);
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String format, Object... arguments) {
+            if (logger.isWarnEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.WARN_INT, format, arguments, null);
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String msg, Throwable t) {
+            if (logger.isWarnEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.WARN_INT, msg, null, t);
+            }
+        }
+
+        // --- error (now guarded — M-2 fix) ---
+
+        @Override
+        public void error(String message) {
+            if (logger.isErrorEnabled()) {
+                writeLog(null, LocationAwareLogger.ERROR_INT, message, null, null);
+            }
+        }
+
+        @Override
+        public void error(String format, Object arg) {
+            if (logger.isErrorEnabled()) {
+                writeLog(null, LocationAwareLogger.ERROR_INT, format, new Object[]{arg}, null);
+            }
+        }
+
+        @Override
+        public void error(String format, Object arg1, Object arg2) {
+            if (logger.isErrorEnabled()) {
+                writeLog(null, LocationAwareLogger.ERROR_INT, format, new Object[]{arg1, arg2}, null);
+            }
+        }
+
+        @Override
+        public void error(String format, Object... args) {
+            if (logger.isErrorEnabled()) {
+                writeLog(null, LocationAwareLogger.ERROR_INT, format, args, null);
+            }
+        }
+
+        @Override
+        public void error(String msg, Throwable t) {
+            if (logger.isErrorEnabled()) {
+                writeLog(null, LocationAwareLogger.ERROR_INT, msg, null, t);
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String msg) {
+            if (logger.isErrorEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.ERROR_INT, msg, null, null);
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String format, Object arg) {
+            if (logger.isErrorEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.ERROR_INT, format, new Object[]{arg}, null);
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String format, Object arg1, Object arg2) {
+            if (logger.isErrorEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.ERROR_INT, format, new Object[]{arg1, arg2}, null);
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String format, Object... arguments) {
+            if (logger.isErrorEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.ERROR_INT, format, arguments, null);
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String msg, Throwable t) {
+            if (logger.isErrorEnabled(marker)) {
+                writeLog(marker, LocationAwareLogger.ERROR_INT, msg, null, t);
+            }
         }
 
         private void writeLog(Marker marker, int level, String format, Object[] args, Throwable exception) {
@@ -498,34 +597,26 @@ public class LogContext {
                 }
                 message = formatted.getMessage();
             }
-            boolean pushed = pushMdc();
+            Map<String, String> saved = pushMdc();
             try {
                 logger.log(marker, fqcn, level, addPrefix(message), null, exception);
             } finally {
-                if (pushed) {
-                    popMdc();
-                }
+                popMdc(saved);
             }
         }
     }
 
+    /**
+     * Logger implementation for SLF4J backends that do not implement {@link LocationAwareLogger}.
+     * MDC push/pop is inlined in each method (no lambda allocation) and all levels are guarded
+     * to avoid unnecessary MDC operations when the level is disabled.
+     */
     private static class LocationIgnorantKafkaLogger extends AbstractKafkaLogger {
         private final Logger logger;
 
         LocationIgnorantKafkaLogger(String logPrefix, Map<String, String> contextMap, Logger logger) {
             super(logPrefix, contextMap);
             this.logger = logger;
-        }
-
-        private void logWithMdc(Runnable logAction) {
-            boolean pushed = pushMdc();
-            try {
-                logAction.run();
-            } finally {
-                if (pushed) {
-                    popMdc();
-                }
-            }
         }
 
         @Override
@@ -583,294 +674,614 @@ public class LogContext {
             return logger.isErrorEnabled(marker);
         }
 
+        // --- trace ---
+
         @Override
         public void trace(String message) {
             if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(addPrefix(message)));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(addPrefix(message));
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(String message, Object arg) {
             if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(addPrefix(message), arg));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(addPrefix(message), arg);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(String message, Object arg1, Object arg2) {
             if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(addPrefix(message), arg1, arg2));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(addPrefix(message), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(String message, Object... args) {
             if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(addPrefix(message), args));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(addPrefix(message), args);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(String msg, Throwable t) {
             if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(addPrefix(msg), t));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(Marker marker, String msg) {
-            if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(marker, addPrefix(msg)));
+            if (logger.isTraceEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(marker, addPrefix(msg));
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object arg) {
-            if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(marker, addPrefix(format), arg));
+            if (logger.isTraceEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(marker, addPrefix(format), arg);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object arg1, Object arg2) {
-            if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(marker, addPrefix(format), arg1, arg2));
+            if (logger.isTraceEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(marker, addPrefix(format), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object... argArray) {
-            if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(marker, addPrefix(format), argArray));
+            if (logger.isTraceEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(marker, addPrefix(format), argArray);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void trace(Marker marker, String msg, Throwable t) {
-            if (logger.isTraceEnabled()) {
-                logWithMdc(() -> logger.trace(marker, addPrefix(msg), t));
+            if (logger.isTraceEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.trace(marker, addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
+
+        // --- debug ---
 
         @Override
         public void debug(String message) {
             if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(addPrefix(message)));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(addPrefix(message));
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(String message, Object arg) {
             if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(addPrefix(message), arg));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(addPrefix(message), arg);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(String message, Object arg1, Object arg2) {
             if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(addPrefix(message), arg1, arg2));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(addPrefix(message), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(String message, Object... args) {
             if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(addPrefix(message), args));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(addPrefix(message), args);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(String msg, Throwable t) {
             if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(addPrefix(msg), t));
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(Marker marker, String msg) {
-            if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(marker, addPrefix(msg)));
+            if (logger.isDebugEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(marker, addPrefix(msg));
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object arg) {
-            if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(marker, addPrefix(format), arg));
+            if (logger.isDebugEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(marker, addPrefix(format), arg);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object arg1, Object arg2) {
-            if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(marker, addPrefix(format), arg1, arg2));
+            if (logger.isDebugEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(marker, addPrefix(format), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object... arguments) {
-            if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(marker, addPrefix(format), arguments));
+            if (logger.isDebugEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(marker, addPrefix(format), arguments);
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
         public void debug(Marker marker, String msg, Throwable t) {
-            if (logger.isDebugEnabled()) {
-                logWithMdc(() -> logger.debug(marker, addPrefix(msg), t));
+            if (logger.isDebugEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.debug(marker, addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        // --- info (guarded — M-3 fix) ---
+
+        @Override
+        public void info(String message) {
+            if (logger.isInfoEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(addPrefix(message));
+                } finally {
+                    popMdc(saved);
+                }
             }
         }
 
         @Override
-        public void warn(String message) {
-            logWithMdc(() -> logger.warn(addPrefix(message)));
-        }
-
-        @Override
-        public void warn(String message, Object arg) {
-            logWithMdc(() -> logger.warn(addPrefix(message), arg));
-        }
-
-        @Override
-        public void warn(String message, Object arg1, Object arg2) {
-            logWithMdc(() -> logger.warn(addPrefix(message), arg1, arg2));
-        }
-
-        @Override
-        public void warn(String message, Object... args) {
-            logWithMdc(() -> logger.warn(addPrefix(message), args));
-        }
-
-        @Override
-        public void warn(String msg, Throwable t) {
-            logWithMdc(() -> logger.warn(addPrefix(msg), t));
-        }
-
-        @Override
-        public void warn(Marker marker, String msg) {
-            logWithMdc(() -> logger.warn(marker, addPrefix(msg)));
-        }
-
-        @Override
-        public void warn(Marker marker, String format, Object arg) {
-            logWithMdc(() -> logger.warn(marker, addPrefix(format), arg));
-        }
-
-        @Override
-        public void warn(Marker marker, String format, Object arg1, Object arg2) {
-            logWithMdc(() -> logger.warn(marker, addPrefix(format), arg1, arg2));
-        }
-
-        @Override
-        public void warn(Marker marker, String format, Object... arguments) {
-            logWithMdc(() -> logger.warn(marker, addPrefix(format), arguments));
-        }
-
-        @Override
-        public void warn(Marker marker, String msg, Throwable t) {
-            logWithMdc(() -> logger.warn(marker, addPrefix(msg), t));
-        }
-
-        @Override
-        public void error(String message) {
-            logWithMdc(() -> logger.error(addPrefix(message)));
-        }
-
-        @Override
-        public void error(String message, Object arg) {
-            logWithMdc(() -> logger.error(addPrefix(message), arg));
-        }
-
-        @Override
-        public void error(String message, Object arg1, Object arg2) {
-            logWithMdc(() -> logger.error(addPrefix(message), arg1, arg2));
-        }
-
-        @Override
-        public void error(String message, Object... args) {
-            logWithMdc(() -> logger.error(addPrefix(message), args));
-        }
-
-        @Override
-        public void error(String msg, Throwable t) {
-            logWithMdc(() -> logger.error(addPrefix(msg), t));
-        }
-
-        @Override
-        public void error(Marker marker, String msg) {
-            logWithMdc(() -> logger.error(marker, addPrefix(msg)));
-        }
-
-        @Override
-        public void error(Marker marker, String format, Object arg) {
-            logWithMdc(() -> logger.error(marker, addPrefix(format), arg));
-        }
-
-        @Override
-        public void error(Marker marker, String format, Object arg1, Object arg2) {
-            logWithMdc(() -> logger.error(marker, addPrefix(format), arg1, arg2));
-        }
-
-        @Override
-        public void error(Marker marker, String format, Object... arguments) {
-            logWithMdc(() -> logger.error(marker, addPrefix(format), arguments));
-        }
-
-        @Override
-        public void error(Marker marker, String msg, Throwable t) {
-            logWithMdc(() -> logger.error(marker, addPrefix(msg), t));
-        }
-
-        @Override
-        public void info(String message) {
-            logWithMdc(() -> logger.info(addPrefix(message)));
-        }
-
-        @Override
         public void info(String message, Object arg) {
-            logWithMdc(() -> logger.info(addPrefix(message), arg));
+            if (logger.isInfoEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(addPrefix(message), arg);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(String message, Object arg1, Object arg2) {
-            logWithMdc(() -> logger.info(addPrefix(message), arg1, arg2));
+            if (logger.isInfoEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(addPrefix(message), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(String message, Object... args) {
-            logWithMdc(() -> logger.info(addPrefix(message), args));
+            if (logger.isInfoEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(addPrefix(message), args);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(String msg, Throwable t) {
-            logWithMdc(() -> logger.info(addPrefix(msg), t));
+            if (logger.isInfoEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(Marker marker, String msg) {
-            logWithMdc(() -> logger.info(marker, addPrefix(msg)));
+            if (logger.isInfoEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(marker, addPrefix(msg));
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(Marker marker, String format, Object arg) {
-            logWithMdc(() -> logger.info(marker, addPrefix(format), arg));
+            if (logger.isInfoEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(marker, addPrefix(format), arg);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(Marker marker, String format, Object arg1, Object arg2) {
-            logWithMdc(() -> logger.info(marker, addPrefix(format), arg1, arg2));
+            if (logger.isInfoEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(marker, addPrefix(format), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(Marker marker, String format, Object... arguments) {
-            logWithMdc(() -> logger.info(marker, addPrefix(format), arguments));
+            if (logger.isInfoEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(marker, addPrefix(format), arguments);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
         @Override
         public void info(Marker marker, String msg, Throwable t) {
-            logWithMdc(() -> logger.info(marker, addPrefix(msg), t));
+            if (logger.isInfoEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.info(marker, addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        // --- warn (guarded — M-3 fix) ---
+
+        @Override
+        public void warn(String message) {
+            if (logger.isWarnEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(addPrefix(message));
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(String message, Object arg) {
+            if (logger.isWarnEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(addPrefix(message), arg);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(String message, Object arg1, Object arg2) {
+            if (logger.isWarnEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(addPrefix(message), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(String message, Object... args) {
+            if (logger.isWarnEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(addPrefix(message), args);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(String msg, Throwable t) {
+            if (logger.isWarnEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String msg) {
+            if (logger.isWarnEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(marker, addPrefix(msg));
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String format, Object arg) {
+            if (logger.isWarnEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(marker, addPrefix(format), arg);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String format, Object arg1, Object arg2) {
+            if (logger.isWarnEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(marker, addPrefix(format), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String format, Object... arguments) {
+            if (logger.isWarnEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(marker, addPrefix(format), arguments);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void warn(Marker marker, String msg, Throwable t) {
+            if (logger.isWarnEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.warn(marker, addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        // --- error (guarded — M-3 fix) ---
+
+        @Override
+        public void error(String message) {
+            if (logger.isErrorEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(addPrefix(message));
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(String message, Object arg) {
+            if (logger.isErrorEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(addPrefix(message), arg);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(String message, Object arg1, Object arg2) {
+            if (logger.isErrorEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(addPrefix(message), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(String message, Object... args) {
+            if (logger.isErrorEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(addPrefix(message), args);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(String msg, Throwable t) {
+            if (logger.isErrorEnabled()) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String msg) {
+            if (logger.isErrorEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(marker, addPrefix(msg));
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String format, Object arg) {
+            if (logger.isErrorEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(marker, addPrefix(format), arg);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String format, Object arg1, Object arg2) {
+            if (logger.isErrorEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(marker, addPrefix(format), arg1, arg2);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String format, Object... arguments) {
+            if (logger.isErrorEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(marker, addPrefix(format), arguments);
+                } finally {
+                    popMdc(saved);
+                }
+            }
+        }
+
+        @Override
+        public void error(Marker marker, String msg, Throwable t) {
+            if (logger.isErrorEnabled(marker)) {
+                Map<String, String> saved = pushMdc();
+                try {
+                    logger.error(marker, addPrefix(msg), t);
+                } finally {
+                    popMdc(saved);
+                }
+            }
         }
 
     }

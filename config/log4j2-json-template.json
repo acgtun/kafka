@@ -22,14 +22,6 @@
     "$resolver": "thread",
     "field": "name"
   },
-  "kafka.broker.id": {
-    "$resolver": "mdc",
-    "key": "kafka.broker.id"
-  },
-  "kafka.controller.id": {
-    "$resolver": "mdc",
-    "key": "kafka.controller.id"
-  },
   "kafka.node.id": {
     "$resolver": "mdc",
     "key": "kafka.node.id"
@@ -37,6 +29,10 @@
   "kafka.cluster.id": {
     "$resolver": "mdc",
     "key": "kafka.cluster.id"
+  },
+  "kafka.component": {
+    "$resolver": "mdc",
+    "key": "kafka.component"
   },
   "kafka.client.id": {
     "$resolver": "mdc",
@@ -50,6 +46,14 @@
     "$resolver": "mdc",
     "key": "kafka.group.id"
   },
+  "kafka.group.instance.id": {
+    "$resolver": "mdc",
+    "key": "kafka.group.instance.id"
+  },
+  "kafka.transactional.id": {
+    "$resolver": "mdc",
+    "key": "kafka.transactional.id"
+  },
   "kafka.topic": {
     "$resolver": "mdc",
     "key": "kafka.topic"
@@ -57,10 +61,6 @@
   "kafka.partition": {
     "$resolver": "mdc",
     "key": "kafka.partition"
-  },
-  "kafka.component": {
-    "$resolver": "mdc",
-    "key": "kafka.component"
   },
   "kafka.connector": {
     "$resolver": "mdc",

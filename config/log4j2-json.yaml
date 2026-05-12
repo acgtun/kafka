@@ -18,6 +18,10 @@
 #
 # Each log line is a single JSON object with structured fields from MDC,
 # making logs machine-parseable for AI debugging tools and log aggregation systems.
+#
+# Note: If using AsyncAppender/AsyncLogger, Log4j2's default behavior snapshots MDC at
+# enqueue time, so structured context is preserved. Custom async implementations that
+# do not snapshot MDC may lose context fields.
 
 Configuration:
   Properties:
@@ -25,7 +29,7 @@ Configuration:
       - name: "kafka.logs.dir"
         value: "."
       - name: "jsonTemplate"
-        value: "classpath:log4j2-json-template.json"
+        value: "file:config/log4j2-json-template.json"
 
   Appenders:
     Console:

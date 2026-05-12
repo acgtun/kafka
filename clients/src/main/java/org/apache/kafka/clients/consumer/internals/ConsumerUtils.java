@@ -120,7 +120,7 @@ public final class ConsumerUtils {
         Map<String, String> contextMap = new LinkedHashMap<>();
         contextMap.put("kafka.client.id", clientId);
         contextMap.put("kafka.client.type", "consumer");
-        contextMap.put("kafka.group.id", groupId.orElse("null"));
+        groupId.ifPresent(id -> contextMap.put("kafka.group.id", id));
         groupRebalanceConfig.groupInstanceId.ifPresent(
                 instanceId -> contextMap.put("kafka.group.instance.id", instanceId));
 

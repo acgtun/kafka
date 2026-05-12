@@ -22,7 +22,7 @@ Configuration:
       - name: "kafka.logs.dir"
         value: "."
       - name: "jsonTemplate"
-        value: "classpath:log4j2-json-template.json"
+        value: "file:config/log4j2-json-template.json"
 
   Appenders:
     Console:

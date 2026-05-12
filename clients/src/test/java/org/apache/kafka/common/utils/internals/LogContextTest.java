@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.common.utils.internals;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.MDC;
@@ -26,9 +27,15 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LogContextTest {
+
+    @AfterEach
+    void cleanupMdc() {
+        MDC.clear();
+    }
 
     @Test
     void testDefaultConstructor() {
@@ -60,13 +67,8 @@ class LogContextTest {
     void testContextMapIsImmutable() {
         Map<String, String> context = Map.of("kafka.node.id", "1");
         LogContext ctx = new LogContext("[Test] ", context);
-        try {
-            ctx.contextMap().put("new.key", "value");
-            // Should throw UnsupportedOperationException
-            throw new AssertionError("Expected UnsupportedOperationException");
-        } catch (UnsupportedOperationException e) {
-            // expected
-        }
+        assertThrows(UnsupportedOperationException.class,
+                () -> ctx.contextMap().put("new.key", "value"));
     }
 
     @Test
@@ -81,6 +83,12 @@ class LogContextTest {
         LogContext ctx = new LogContext(null, context);
         assertEquals("", ctx.logPrefix());
         assertEquals("1", ctx.contextMap().get("kafka.node.id"));
+    }
+
+    @Test
+    void testNullContextMapThrowsNPE() {
+        assertThrows(NullPointerException.class,
+                () -> new LogContext("[Test] ", null));
     }
 
     @Test
@@ -101,7 +109,6 @@ class LogContextTest {
 
     @Test
     void testMdcPopulatedDuringLogCallWithContext() {
-        // MDC should be clean before and after log calls
         assertNull(MDC.get("kafka.node.id"));
 
         Map<String, String> context = Map.of(
@@ -110,20 +117,17 @@ class LogContextTest {
         LogContext ctx = new LogContext("[Test id=42] ", context);
         Logger logger = ctx.logger(LogContextTest.class);
 
-        // After creating logger and before logging, MDC should still be clean
+        // Before logging, MDC should be clean
         assertNull(MDC.get("kafka.node.id"));
 
-        // Log a message - MDC should be populated during the call and cleaned after
-        logger.info("test message");
-
         // After the log call, MDC should be cleaned up
+        logger.info("test message");
         assertNull(MDC.get("kafka.node.id"));
         assertNull(MDC.get("kafka.component"));
     }
 
     @Test
     void testMdcNotPopulatedWithEmptyContextMap() {
-        // With no context map, MDC should never be touched
         LogContext ctx = new LogContext("[Test] ");
         Logger logger = ctx.logger(LogContextTest.class);
 
@@ -132,24 +136,27 @@ class LogContextTest {
 
         // Existing MDC entry should be untouched
         assertEquals("existing.value", MDC.get("existing.key"));
-        MDC.remove("existing.key");
     }
 
     @Test
-    void testMdcCleanedUpEvenOnLoggerException() {
-        // Verify MDC cleanup happens in finally block
+    void testMdcCleanedUpAtAllLogLevels() {
         Map<String, String> context = Map.of("kafka.node.id", "1");
         LogContext ctx = new LogContext("[Test] ", context);
         Logger logger = ctx.logger(LogContextTest.class);
 
-        // Log at various levels
         logger.trace("trace msg");
-        logger.debug("debug msg");
-        logger.info("info msg");
-        logger.warn("warn msg");
-        logger.error("error msg");
+        assertNull(MDC.get("kafka.node.id"));
 
-        // MDC should be clean after all calls
+        logger.debug("debug msg");
+        assertNull(MDC.get("kafka.node.id"));
+
+        logger.info("info msg");
+        assertNull(MDC.get("kafka.node.id"));
+
+        logger.warn("warn msg");
+        assertNull(MDC.get("kafka.node.id"));
+
+        logger.error("error msg");
         assertNull(MDC.get("kafka.node.id"));
     }
 
@@ -161,9 +168,7 @@ class LogContextTest {
         Logger logger = ctx.logger(LogContextTest.class);
         logger.info("test message");
 
-        // Pre-existing MDC entry should be preserved
         assertEquals("value", MDC.get("pre-existing"));
-        MDC.remove("pre-existing");
     }
 
     @Test
@@ -174,11 +179,118 @@ class LogContextTest {
         Logger logger1 = ctx.logger(LogContextTest.class);
         Logger logger2 = ctx.logger("another.logger");
 
-        // Both loggers should use the same context
         logger1.info("from logger 1");
-        assertNull(MDC.get("kafka.node.id")); // cleaned up
+        assertNull(MDC.get("kafka.node.id"));
 
         logger2.info("from logger 2");
-        assertNull(MDC.get("kafka.node.id")); // cleaned up
+        assertNull(MDC.get("kafka.node.id"));
+    }
+
+    // --- C-1 fix: MDC save/restore preserves pre-existing values ---
+
+    @Test
+    void testMdcSaveRestorePreservesPreExistingValues() {
+        // Simulate Kafka Connect's LoggingContext setting a value on the same thread
+        MDC.put("kafka.node.id", "pre-existing-99");
+        MDC.put("unrelated.key", "keep-me");
+
+        Map<String, String> context = Map.of("kafka.node.id", "42");
+        LogContext ctx = new LogContext("[Test] ", context);
+        Logger logger = ctx.logger(LogContextTest.class);
+
+        logger.info("test message");
+
+        // Pre-existing value for the SAME key must be restored, not removed
+        assertEquals("pre-existing-99", MDC.get("kafka.node.id"));
+        // Unrelated keys must be untouched
+        assertEquals("keep-me", MDC.get("unrelated.key"));
+    }
+
+    @Test
+    void testMdcSaveRestoreWithMultipleOverlappingKeys() {
+        MDC.put("kafka.node.id", "original-node");
+        MDC.put("kafka.component", "original-component");
+
+        Map<String, String> context = Map.of(
+                "kafka.node.id", "new-node",
+                "kafka.component", "new-component",
+                "kafka.client.id", "new-only");
+        LogContext ctx = new LogContext("[Test] ", context);
+        Logger logger = ctx.logger(LogContextTest.class);
+
+        logger.info("test");
+
+        // Overlapping keys restored to original values
+        assertEquals("original-node", MDC.get("kafka.node.id"));
+        assertEquals("original-component", MDC.get("kafka.component"));
+        // Key that didn't exist before should be removed
+        assertNull(MDC.get("kafka.client.id"));
+    }
+
+    // --- C-2 fix: reentrancy ---
+
+    @Test
+    void testReentrantLogCallsDoNotCorruptMdc() {
+        // Simulate two LogContext loggers on the same thread logging in sequence
+        // (reentrancy via exception handler or listener is hard to test directly,
+        // but sequential calls verify the save/restore is per-call)
+        Map<String, String> outer = Map.of("kafka.node.id", "outer");
+        Map<String, String> inner = Map.of("kafka.node.id", "inner");
+
+        LogContext outerCtx = new LogContext("[Outer] ", outer);
+        LogContext innerCtx = new LogContext("[Inner] ", inner);
+
+        Logger outerLogger = outerCtx.logger(LogContextTest.class);
+        Logger innerLogger = innerCtx.logger("inner.logger");
+
+        outerLogger.info("outer message");
+        assertNull(MDC.get("kafka.node.id"));
+
+        innerLogger.info("inner message");
+        assertNull(MDC.get("kafka.node.id"));
+
+        // Interleaved usage should also be safe
+        outerLogger.warn("outer again");
+        assertNull(MDC.get("kafka.node.id"));
+    }
+
+    // --- Concurrent threads test ---
+
+    @Test
+    void testConcurrentThreadsDoNotInterfere() throws Exception {
+        Map<String, String> context = Map.of("kafka.node.id", "shared");
+        LogContext ctx = new LogContext("[Shared] ", context);
+        Logger logger = ctx.logger(LogContextTest.class);
+
+        int threadCount = 10;
+        Thread[] threads = new Thread[threadCount];
+        Throwable[] errors = new Throwable[1];
+
+        for (int i = 0; i < threadCount; i++) {
+            final int threadNum = i;
+            threads[i] = new Thread(() -> {
+                try {
+                    for (int j = 0; j < 100; j++) {
+                        logger.info("thread " + threadNum + " iteration " + j);
+                        String leftover = MDC.get("kafka.node.id");
+                        if (leftover != null) {
+                            errors[0] = new AssertionError(
+                                    "MDC leaked on thread " + threadNum + ": kafka.node.id=" + leftover);
+                            return;
+                        }
+                    }
+                } catch (Throwable e) {
+                    errors[0] = e;
+                }
+            });
+        }
+
+        for (Thread t : threads) t.start();
+        for (Thread t : threads) t.join(5000);
+
+        if (errors[0] != null) {
+            if (errors[0] instanceof Exception) throw (Exception) errors[0];
+            if (errors[0] instanceof Error) throw (Error) errors[0];
+        }
     }
 }

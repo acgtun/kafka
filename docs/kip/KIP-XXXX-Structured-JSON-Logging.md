@@ -160,14 +160,17 @@ new LogContext(
     Map.of("kafka.node.id", "0", "kafka.component", "BrokerServer"))
 ```
 
-The context map entries are pushed to the SLF4J MDC before each log call and removed
-after. This makes them available as first-class fields to any SLF4J-compatible
-structured logging layout (Log4j2 `JsonTemplateLayout`, Logback `JsonEncoder`, etc.).
+The context map entries are pushed to the SLF4J MDC before each log call and restored
+after (any pre-existing MDC values for the same keys are saved and restored). This
+makes them available as first-class fields to any SLF4J-compatible structured logging
+layout (Log4j2 `JsonTemplateLayout`, Logback `JsonEncoder`, etc.).
 
 **Key design decisions:**
 
-- **Per-call MDC push/pop**: Context is pushed to MDC only for the duration of each log
-  call, then cleaned up. This avoids cross-contamination between components that share
+- **Per-call MDC save/push/pop/restore**: Context is pushed to MDC only for the duration
+  of each log call, then restored. Pre-existing MDC values (e.g., from Kafka Connect's
+  `LoggingContext`) are saved before the push and restored after. This avoids both
+  cross-contamination between components that share
   threads, and is consistent with the existing prefix-per-call pattern.
 
 - **Zero overhead when unused**: When `contextMap` is empty (the default for the
@@ -287,6 +290,25 @@ with no transitive dependencies beyond `log4j-core`.
 
 3. **Phase 3 (follow-up)**: Migrate the Scala `Logging` trait with `logIdent` to also
    populate MDC, covering legacy Scala server code.
+
+### Known Limitations
+
+- **Async logging**: Log4j2's default `AsyncAppender` snapshots MDC at enqueue time,
+  so structured context is correctly preserved in async mode. Custom async
+  implementations that do not snapshot MDC at enqueue time may lose context fields.
+  This is documented in the JSON YAML config files.
+
+- **Virtual threads (Project Loom)**: SLF4J 1.7.x MDC uses `ThreadLocal`, which binds
+  to the carrier thread, not the virtual thread. If Kafka adopts virtual threads in
+  the future, MDC-based structured logging will require SLF4J 2.x (which uses
+  `ScopedValue`) or Log4j2 2.24+ for correct context propagation. This is not a
+  concern today since Kafka does not use virtual threads internally.
+
+- **Scala `Logging` trait coverage**: The Scala `Logging` trait (used by ~100+ classes
+  like `ReplicaManager`, `KafkaApis`, `Partition`) does not go through `LogContext`.
+  As a partial mitigation, `BrokerServer` sets `kafka.node.id` in the thread-level MDC
+  at startup, providing basic context for Scala loggers on broker threads. Full
+  coverage requires Phase 3.
 
 ## Rejected Alternatives
 
