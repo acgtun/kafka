@@ -1,4 +1,4 @@
-# KIP-XXXX: Structured JSON Logging for Apache Kafka
+# KIP-XXXX: Structured MDC Context for Kafka Logging
 
 ## Status
 
@@ -18,59 +18,91 @@
 
 ## Motivation
 
-Apache Kafka currently outputs all log messages as unstructured plain text using a
-simple pattern: `[%d] %p %m (%c)%n`. For example:
+KIP-653 (Kafka 4.0) upgraded Kafka from Log4j 1.x to Log4j 2.x, which supports
+structured JSON output via `JsonTemplateLayout`. Operators can already switch to JSON
+logging by editing `log4j2.yaml`. However, doing so today produces logs with **empty
+context fields** because Kafka's broker, controller, and client components do not
+populate the SLF4J Mapped Diagnostic Context (MDC):
 
+```json
+{
+  "timestamp": "2026-05-12T10:00:00.000+0000",
+  "level": "WARN",
+  "logger": "org.apache.kafka.storage.internals.log.UnifiedLog",
+  "message": "[UnifiedLog partition=payments-3, dir=/data/kafka] Non-monotonic update of high watermark",
+  "thread": "data-plane-kafka-request-handler-0"
+}
 ```
-[2026-05-12 10:00:00,000] INFO [BrokerServer id=0] Started broker server (kafka.server.BrokerServer)
+
+The broker ID, topic, and partition are buried inside the message string prefix
+(`[UnifiedLog partition=payments-3, dir=/data/kafka]`). There are no structured fields
+a log aggregation system can index, filter, or alert on without custom regex parsing.
+
+KIP-449 (Kafka 2.3) proved this problem is solvable: it added MDC context to Kafka
+Connect, populating `connector.context` with the connector name and task ID. This
+enables `%X{connector.context}` in log patterns and structured fields in JSON output.
+But this approach was never extended to the broker, controller, or client libraries.
+
+**This KIP closes that gap.** It populates SLF4J MDC with standardized context fields
+(`kafka.node.id`, `kafka.topic`, `kafka.partition`, `kafka.client.id`, etc.) across
+all major Kafka components, and ships ready-to-use JSON Log4j2 configuration files.
+
+After this KIP, the same log event produces:
+
+```json
+{
+  "timestamp": "2026-05-12T10:00:00.000+0000",
+  "level": "WARN",
+  "logger": "org.apache.kafka.storage.internals.log.UnifiedLog",
+  "message": "[UnifiedLog partition=payments-3, dir=/data/kafka] Non-monotonic update of high watermark",
+  "thread": "data-plane-kafka-request-handler-0",
+  "kafka.topic": "payments",
+  "kafka.partition": "3",
+  "kafka.node.id": "0",
+  "kafka.component": "UnifiedLog"
+}
 ```
 
-While human-readable, this format has significant limitations for modern operations:
+### The Problem in Detail
 
-1. **Log aggregation is lossy**: When ingesting Kafka logs into Elasticsearch, Splunk,
-   Datadog, or Grafana Loki, operators must write custom grok/regex parsers for each
-   component's prefix format. These parsers are brittle and lose information when the
-   format varies between components (e.g., `[BrokerServer id=0]` vs
-   `[UnifiedLog partition=test-0, dir=/data]` vs `[Producer clientId=p1]`).
+1. **MDC is empty**: The broker, controller, and all client libraries (producer,
+   consumer, admin) do not set any MDC fields. Only Kafka Connect (via KIP-449) sets
+   `connector.context`. This means `JsonTemplateLayout` MDC resolvers produce null for
+   every field on every log line.
 
-2. **Cross-component correlation is difficult**: There are no shared context fields
-   (like `kafka.node.id` or `kafka.cluster.id`) that appear consistently across all log
-   messages from a given broker, making it hard to filter logs by source in
-   multi-tenant or multi-cluster environments.
+2. **Context is trapped in string prefixes**: The `LogContext` class prepends a
+   human-readable prefix like `[BrokerServer id=0]` or `[Producer clientId=p1]` to
+   every log message. This context is useful for text logs but is not available as
+   structured fields for log aggregation, filtering, or alerting.
 
-3. **Machine parsing is fragile**: Context fields like broker ID, topic, partition, and
-   client ID are embedded in a free-form string prefix (`[BrokerServer id=0]`). Parsing
-   them requires regex heuristics that break when prefix formats change across versions
-   or components.
+3. **No standard field names**: Even if operators manually called `MDC.put()` in their
+   code, there is no agreed-upon naming convention for context fields across Kafka
+   components. Each deployment would invent its own names.
 
-4. **No MDC context fields**: The SLF4J Mapped Diagnostic Context (MDC) is unused by
-   the broker, controller, and client libraries (only Kafka Connect uses it for
-   `connector.context`). This means structured logging layouts like
-   `JsonTemplateLayout` produce JSON with empty context fields.
+4. **Cross-component correlation is impossible**: There is no shared field (like
+   `kafka.node.id`) that appears consistently across all log messages from a given
+   broker, making it hard to filter logs by source in multi-tenant or multi-cluster
+   environments.
 
-5. **Automated analysis tools are ineffective**: Anomaly detection, automated root-cause
-   analysis, and AI-powered debugging tools work orders of magnitude better with
-   structured data. A tool that receives `{"nodeId":"0", "topic":"payments",
-   "partition":"3"}` can instantly filter and correlate; one that receives
-   `[UnifiedLog partition=payments-3, dir=/data/kafka]` must first guess the field
-   format.
+### Prior Art
+
+| KIP | Kafka Version | What it did | Relationship to this KIP |
+|---|---|---|---|
+| **KIP-653** | 4.0 | Upgraded to Log4j 2.x; enabled `JsonTemplateLayout` | Provides the JSON output capability. This KIP populates the MDC fields that JSON output needs. |
+| **KIP-449** | 2.3 | Added MDC context (`connector.context`) to Kafka Connect | Proved the MDC pattern works in Kafka. This KIP extends the same approach to broker, controller, and clients. |
+| **KIP-673** | 2.8 | Made request/response DEBUG traces emit proper JSON | Different scope (request traces only). Complementary to this KIP. |
+| **KIP-714** | 3.6 | Client metrics telemetry via OpenTelemetry Protocol | KIP-714 structures **metrics**; this KIP structures **logs**. Together they complete the Kafka observability story. |
+| **KIP-916** | Under Discussion | Adds `flow.context` MDC key for MirrorMaker 2 | Same MDC pattern, narrow scope (MM2 only). Complementary to this KIP. |
 
 ### Industry Context
 
-Structured logging is industry standard for infrastructure software:
+Structured logging with pre-populated context fields is industry standard:
 
-- **Kubernetes**: JSON logs are the default since KEP-1602 (GA in Kubernetes 1.24).
-- **Elasticsearch**: Structured JSON logging since version 7.
-- **PostgreSQL**: `log_destination = 'jsonlog'` since version 15.
-- **MongoDB**: Structured JSON logging since version 4.4.
-
-Apache Kafka is a notable holdout among major distributed systems.
-
-### Relationship to KIP-714 (Client Telemetry)
-
-KIP-714 introduced structured client metrics telemetry via OpenTelemetry Protocol.
-This KIP is the natural complement: KIP-714 structures **metrics**, this KIP structures
-**logs**. Together they complete the observability story for Kafka.
+- **Kubernetes**: JSON logs with structured context are the default since KEP-1602
+  (GA in Kubernetes 1.24).
+- **Elasticsearch**: Structured JSON logging with node/index context since version 7.
+- **PostgreSQL**: `log_destination = 'jsonlog'` with structured fields since version 15.
+- **MongoDB**: Structured JSON logging with component context since version 4.4.
 
 ## Public Interfaces
 
@@ -462,16 +494,28 @@ mechanism for configuring the logging format and would not cover client-side or 
 tool logging. The environment variable approach (`KAFKA_LOG4J_OPTS`) is the established
 pattern for Kafka logging configuration and works consistently across all components.
 
-### 7. "Just configure MDC yourself"
+### 7. "KIP-653 already enables JSON logging --- this KIP is unnecessary"
 
-Users can already set MDC values manually and use `%X{key}` in Log4j2 patterns.
-However, this KIP provides value beyond what users can do themselves:
-- **Standardized key names** across all Kafka components (users would need to agree on
-  and enforce naming conventions)
-- **Pre-populated context** --- users don't need to instrument every component
-- **Correct save/restore** --- the `LogContext` wrapper handles Kafka's shared-thread
-  model correctly, which is non-trivial to implement in user code
-- **Official JSON template** --- a ready-to-use config file with the right schema
+KIP-653 (Log4j 2 upgrade) provides the **output mechanism** (`JsonTemplateLayout`), but
+not the **input data**. Switching to `JsonTemplateLayout` today produces JSON with empty
+context fields because no Kafka component populates MDC. This KIP populates MDC with
+structured context so that JSON output actually contains useful data. The relationship
+is analogous to providing a database schema (KIP-653) vs. populating the database with
+data (this KIP).
+
+### 8. "Users can configure MDC themselves"
+
+Users can call `MDC.put()` manually and use `%X{key}` in Log4j2 patterns. However,
+this KIP provides value beyond what users can do themselves:
+- **Standardized key names** across all Kafka components --- users would need to agree
+  on and enforce naming conventions across their organization
+- **Pre-populated context** --- users cannot instrument Kafka's internal components
+  (e.g., `UnifiedLog`, `BrokerLifecycleManager`) without modifying Kafka source code
+- **Correct save/restore** --- Kafka's shared-thread model (e.g., request handler
+  threads serving multiple topics/partitions) requires per-call MDC save/restore to
+  avoid cross-contamination. This is non-trivial to implement correctly in user code.
+  KIP-449 solved this for Connect; this KIP solves it for the rest of Kafka.
+- **Official JSON template** --- a ready-to-use config file with the right field schema
 
 ## Test Plan
 
