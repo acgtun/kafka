@@ -4,6 +4,12 @@
 
 **Current State**: Draft
 
+**Author(s)**: Haifeng Chen
+
+**Created**: 2026-05-12
+
+**Target Kafka Version**: 4.2
+
 **Discussion Thread**: (link)
 
 **JIRA**: (link)
@@ -19,42 +25,56 @@ simple pattern: `[%d] %p %m (%c)%n`. For example:
 [2026-05-12 10:00:00,000] INFO [BrokerServer id=0] Started broker server (kafka.server.BrokerServer)
 ```
 
-While human-readable, this format has significant limitations:
+While human-readable, this format has significant limitations for modern operations:
 
-1. **Machine parsing is fragile**: Context fields like broker ID, topic, partition, and
-   client ID are embedded in a free-form string prefix (`[BrokerServer id=0]`). Parsing
-   them requires regex heuristics that break when prefix formats vary across components.
-
-2. **AI/LLM-based debugging tools struggle**: Modern AI-powered log analysis, anomaly
-   detection, and automated root-cause-analysis tools work orders of magnitude better
-   with structured data. An AI tool that receives `{"brokerId":0, "topic":"payments",
-   "partition":3}` can instantly filter and correlate; one that receives
-   `[UnifiedLog partition=payments-3, dir=/data/kafka]` must first guess the field format.
-
-3. **Log aggregation is lossy**: When ingesting Kafka logs into Elasticsearch,
-   Splunk, Datadog, or Loki, operators must write custom grok/regex parsers for each
+1. **Log aggregation is lossy**: When ingesting Kafka logs into Elasticsearch, Splunk,
+   Datadog, or Grafana Loki, operators must write custom grok/regex parsers for each
    component's prefix format. These parsers are brittle and lose information when the
-   format changes.
+   format varies between components (e.g., `[BrokerServer id=0]` vs
+   `[UnifiedLog partition=test-0, dir=/data]` vs `[Producer clientId=p1]`).
+
+2. **Cross-component correlation is difficult**: There are no shared context fields
+   (like `kafka.node.id` or `kafka.cluster.id`) that appear consistently across all log
+   messages from a given broker, making it hard to filter logs by source in
+   multi-tenant or multi-cluster environments.
+
+3. **Machine parsing is fragile**: Context fields like broker ID, topic, partition, and
+   client ID are embedded in a free-form string prefix (`[BrokerServer id=0]`). Parsing
+   them requires regex heuristics that break when prefix formats change across versions
+   or components.
 
 4. **No MDC context fields**: The SLF4J Mapped Diagnostic Context (MDC) is unused by
    the broker, controller, and client libraries (only Kafka Connect uses it for
    `connector.context`). This means structured logging layouts like
    `JsonTemplateLayout` produce JSON with empty context fields.
 
-5. **Cross-component correlation is difficult**: There are no shared context fields
-   (like `kafka.node.id` or `kafka.cluster.id`) that appear consistently across all log
-   messages from a given broker, making it hard to filter logs by source.
+5. **Automated analysis tools are ineffective**: Anomaly detection, automated root-cause
+   analysis, and AI-powered debugging tools work orders of magnitude better with
+   structured data. A tool that receives `{"nodeId":"0", "topic":"payments",
+   "partition":"3"}` can instantly filter and correlate; one that receives
+   `[UnifiedLog partition=payments-3, dir=/data/kafka]` must first guess the field
+   format.
 
-### Industry context
+### Industry Context
 
-Structured logging is industry standard. Kubernetes components output JSON logs by
-default (KEP-1602, GA since 1.24). Elasticsearch, MongoDB, PostgreSQL, and most
-modern infrastructure software provide structured JSON log modes. Apache Kafka is a
-notable holdout.
+Structured logging is industry standard for infrastructure software:
+
+- **Kubernetes**: JSON logs are the default since KEP-1602 (GA in Kubernetes 1.24).
+- **Elasticsearch**: Structured JSON logging since version 7.
+- **PostgreSQL**: `log_destination = 'jsonlog'` since version 15.
+- **MongoDB**: Structured JSON logging since version 4.4.
+
+Apache Kafka is a notable holdout among major distributed systems.
+
+### Relationship to KIP-714 (Client Telemetry)
+
+KIP-714 introduced structured client metrics telemetry via OpenTelemetry Protocol.
+This KIP is the natural complement: KIP-714 structures **metrics**, this KIP structures
+**logs**. Together they complete the observability story for Kafka.
 
 ## Public Interfaces
 
-### 1. `LogContext` — New Constructor and Method
+### 1. `LogContext` --- New Constructor and Method
 
 `org.apache.kafka.common.utils.internals.LogContext` gains a new public constructor
 and accessor:
@@ -65,6 +85,7 @@ and accessor:
  *
  * @param logPrefix   the string prefix prepended to every log message (may be null)
  * @param contextMap  structured key-value pairs pushed to SLF4J MDC on each log call
+ *                    (must not be null; may be empty)
  */
 public LogContext(String logPrefix, Map<String, String> contextMap)
 
@@ -82,27 +103,30 @@ projects that embed Kafka components, so the change is listed here for completen
 ### 2. Standard MDC Key Names (Log Output Contract)
 
 When JSON logging is enabled, the following MDC keys appear as top-level JSON fields.
-These key names become a **stable public contract** — log consumers (dashboards, alerts,
-AI tools) will depend on them.
+These key names become a **stable public contract** --- log consumers (dashboards, alerts,
+analysis tools) will depend on them.
 
-| MDC Key | Type | Description |
-|---|---|---|
-| `kafka.node.id` | string | Broker or controller node ID |
-| `kafka.cluster.id` | string | Kafka cluster ID (Phase 2 — reserved, not yet set) |
-| `kafka.component` | string | Component name (e.g., `BrokerServer`, `UnifiedLog`) |
-| `kafka.client.id` | string | Client ID (producer, consumer, admin) |
-| `kafka.client.type` | string | One of: `producer`, `consumer`, `admin` |
-| `kafka.group.id` | string | Consumer/share group ID |
-| `kafka.group.instance.id` | string | Static group membership instance ID |
-| `kafka.transactional.id` | string | Transactional producer ID |
-| `kafka.topic` | string | Topic name |
-| `kafka.partition` | string | Partition number |
-| `kafka.connector` | string | Kafka Connect connector name |
-| `kafka.task.id` | string | Kafka Connect task ID |
+| MDC Key | Type | Description | Phase |
+|---|---|---|---|
+| `kafka.node.id` | string | Broker or controller node ID | 1 |
+| `kafka.component` | string | Component name (e.g., `BrokerServer`, `UnifiedLog`) | 1 |
+| `kafka.client.id` | string | Client ID (producer, consumer, admin) | 1 |
+| `kafka.client.type` | string | One of: `producer`, `consumer`, `admin` | 1 |
+| `kafka.group.id` | string | Consumer/share group ID | 1 |
+| `kafka.group.instance.id` | string | Static group membership instance ID | 1 |
+| `kafka.transactional.id` | string | Transactional producer ID | 1 |
+| `kafka.topic` | string | Topic name | 1 |
+| `kafka.partition` | string | Partition number | 1 |
+| `kafka.cluster.id` | string | Kafka cluster ID | 2 (reserved) |
+| `kafka.connector` | string | Kafka Connect connector name | 2 (reserved) |
+| `kafka.task.id` | string | Kafka Connect task ID | 2 (reserved) |
 
 All keys use the `kafka.` prefix to avoid collision with user-defined MDC entries.
 Keys whose MDC value is null are **omitted** from the JSON output (not emitted as
 `"kafka.topic": null`).
+
+Phase 2 keys are reserved in the JSON template for forward compatibility but are not
+populated by any code in this KIP. They will be implemented in follow-up work.
 
 ### 3. JSON Log Schema (`log4j2-json-template.json`)
 
@@ -123,14 +147,23 @@ This template file is a configuration artifact, not compiled code. Users can cus
 it by providing their own template via the `eventTemplateUri` property in the Log4j2
 YAML config.
 
+**Note on message prefix duplication:** The `message` field includes the `LogContext`
+string prefix (e.g., `[BrokerServer id=0]`) for backward compatibility with text-mode
+parsing tools and for human readability. The same information is available as structured
+MDC fields (e.g., `kafka.node.id`). Users who want a cleaner `message` field can provide
+a custom `LogContext` subclass or post-process the JSON output. Removing the prefix from
+JSON-mode messages may be addressed in a future KIP.
+
 ### 4. New Runtime Dependency
 
 | Artifact | Version | Scope |
 |---|---|---|
 | `org.apache.logging.log4j:log4j-layout-template-json` | Same as `log4j-core` (currently 2.25.4) | Runtime (only needed when JSON config is active) |
 
-This artifact has no transitive dependencies beyond `log4j-core` (already a Kafka
-dependency). It is added to the `log4j2Libs` and `log4jReleaseLibs` dependency groups.
+This artifact is ~80KB with no transitive dependencies beyond `log4j-core` (already a
+Kafka dependency). It is added to the `log4j2Libs` and `log4jReleaseLibs` dependency
+groups. The minimum Log4j2 version required for `JsonTemplateLayout` is 2.14.0; Kafka
+currently ships 2.25.4.
 
 ### 5. No Wire Protocol Changes
 
@@ -150,7 +183,7 @@ components) is enhanced to accept a **structured context map** alongside the exi
 string prefix:
 
 ```java
-// Before (still works - fully backward compatible)
+// Before (still works --- fully backward compatible)
 new LogContext("[BrokerServer id=0] ")
 
 // After (new overload with structured context)
@@ -160,17 +193,22 @@ new LogContext(
 ```
 
 The context map entries are pushed to the SLF4J MDC before each log call and restored
-after (any pre-existing MDC values for the same keys are saved and restored). This
-makes them available as first-class fields to any SLF4J-compatible structured logging
-layout (Log4j2 `JsonTemplateLayout`, Logback `JsonEncoder`, etc.).
+after. Any pre-existing MDC values for the same keys are saved before the push and
+restored after, ensuring that other components' MDC entries (e.g., Kafka Connect's
+`LoggingContext` which sets `connector.context`) are never clobbered.
 
 **Key design decisions:**
 
-- **Per-call MDC save/push/pop/restore**: Context is pushed to MDC only for the duration
-  of each log call, then restored. Pre-existing MDC values (e.g., from Kafka Connect's
-  `LoggingContext`) are saved before the push and restored after. This avoids both
-  cross-contamination between components that share
-  threads, and is consistent with the existing prefix-per-call pattern.
+- **Per-call MDC save/push/restore**: Context is pushed to MDC only for the duration
+  of each log call. Pre-existing MDC values are saved before the push and restored
+  after. This avoids cross-contamination between components that share threads and
+  prevents clobbering of MDC values set by other frameworks (e.g., Kafka Connect's
+  `LoggingContext`). The save state is a method-local variable, so nested/reentrant
+  log calls each get their own independent save state.
+
+- **Level guards on all log methods**: All log methods (trace, debug, info, warn, error)
+  check the log level before performing any work. This ensures zero overhead (no MDC
+  operations, no message formatting, no object allocation) when the level is disabled.
 
 - **Zero overhead when unused**: When `contextMap` is empty (the default for the
   existing single-argument constructor), no MDC operations occur. The performance
@@ -184,24 +222,41 @@ layout (Log4j2 `JsonTemplateLayout`, Logback `JsonEncoder`, etc.).
 
 A set of standard MDC key names is defined for consistent structured output:
 
-| MDC Key | Description | Set by |
-|---|---|---|
-| `kafka.node.id` | Broker or controller node ID | BrokerServer, ControllerServer, SharedServer |
-| `kafka.cluster.id` | Kafka cluster ID | Phase 2 — reserved in template, not yet set |
-| `kafka.component` | Component name (e.g., `BrokerServer`, `ReplicaManager`) | Each component |
-| `kafka.client.id` | Client ID | KafkaProducer, KafkaConsumer, KafkaAdminClient |
-| `kafka.client.type` | Client type: `producer`, `consumer`, `admin` | Client constructors |
-| `kafka.group.id` | Consumer group ID | KafkaConsumer, ShareConsumer |
-| `kafka.group.instance.id` | Static group membership ID | KafkaConsumer |
-| `kafka.transactional.id` | Transactional producer ID | KafkaProducer |
-| `kafka.topic` | Topic name | UnifiedLog, per-partition components |
-| `kafka.partition` | Partition number | UnifiedLog, per-partition components |
-| `kafka.connector` | Kafka Connect connector name | Connect workers |
-| `kafka.task.id` | Kafka Connect task ID | Connect tasks |
+| MDC Key | Description | Set by | Phase |
+|---|---|---|---|
+| `kafka.node.id` | Broker or controller node ID | BrokerServer, ControllerServer, SharedServer | 1 |
+| `kafka.component` | Component name | Each component | 1 |
+| `kafka.client.id` | Client ID | KafkaProducer, KafkaConsumer, KafkaAdminClient | 1 |
+| `kafka.client.type` | `producer`, `consumer`, or `admin` | Client constructors | 1 |
+| `kafka.group.id` | Consumer group ID | KafkaConsumer, ShareConsumer | 1 |
+| `kafka.group.instance.id` | Static group membership ID | KafkaConsumer | 1 |
+| `kafka.transactional.id` | Transactional producer ID | KafkaProducer | 1 |
+| `kafka.topic` | Topic name | UnifiedLog | 1 |
+| `kafka.partition` | Partition number | UnifiedLog | 1 |
+| `kafka.cluster.id` | Kafka cluster ID | (Phase 2) | 2 |
+| `kafka.connector` | Connect connector name | (Phase 2) | 2 |
+| `kafka.task.id` | Connect task ID | (Phase 2) | 2 |
 
 All key names use the `kafka.` prefix to avoid collision with user-defined MDC entries.
 
-### 3. JSON Log4j2 Configuration
+The standardized key names are a key differentiator from "just configure MDC yourself":
+users get pre-populated, consistently named context fields across all Kafka components
+without any instrumentation effort. The `LogContext` wrapper also handles MDC
+save/restore correctly for Kafka's shared-thread model, which is non-trivial to
+implement correctly in user code.
+
+### 3. Interaction with Kafka Connect's Existing MDC Usage
+
+Kafka Connect already uses SLF4J MDC via its `LoggingContext` class, which sets
+`connector.context` in MDC. This KIP's `kafka.*` keys do not conflict with
+`connector.context`. Additionally, the save/restore pattern in `LogContext` ensures
+that any pre-existing MDC entries (including Connect's) are preserved across log calls.
+
+In Phase 2, Connect workers will be updated to set `kafka.connector` and `kafka.task.id`
+via `LogContext` context maps, providing structured fields alongside the existing
+`connector.context` prefix.
+
+### 4. JSON Log4j2 Configuration
 
 Three new Log4j2 configuration files are provided alongside the existing text configs:
 
@@ -231,7 +286,7 @@ These configs use Log4j2's `JsonTemplateLayout` with a shared template file
 {
   "timestamp": "2026-05-12T10:00:01.234+0000",
   "level": "WARN",
-  "logger": "o.a.k.storage.internals.log.UnifiedLog",
+  "logger": "org.apache.kafka.storage.internals.log.UnifiedLog",
   "message": "[UnifiedLog partition=payments-3, dir=/data/kafka] Non-monotonic update of high watermark from 1000 to 999",
   "thread": "data-plane-kafka-request-handler-0",
   "kafka.topic": "payments",
@@ -243,7 +298,7 @@ These configs use Log4j2's `JsonTemplateLayout` with a shared template file
 Fields with null MDC values are omitted from the JSON output (the `JsonTemplateLayout`
 default behavior), keeping messages compact.
 
-### 4. Enabling JSON Logging
+### 5. Enabling JSON Logging
 
 Users switch to JSON logging by setting the Log4j2 configuration system property:
 
@@ -261,11 +316,69 @@ export KAFKA_LOG4J_OPTS="-Dlog4j2.configurationFile=file:config/tools-log4j2-jso
 No code changes, restarts with the new config, or broker configuration changes are
 required. The default `log4j2.yaml` continues to produce text output.
 
-### 5. New Dependency
+**Containerized deployments:** In Docker/Kubernetes environments, set `KAFKA_LOG4J_OPTS`
+in the container environment (e.g., Helm `values.yaml`, `docker-compose.yml`, or
+Kubernetes `ConfigMap`). Strimzi users can configure this via `spec.kafka.logging` in
+the Kafka CRD.
+
+### 6. New Dependency
 
 The `log4j-layout-template-json` artifact (same version as the existing `log4j-core`
-dependency) is added to provide `JsonTemplateLayout` support. This is a Log4j2 module
-with no transitive dependencies beyond `log4j-core`.
+dependency, ~80KB) is added to provide `JsonTemplateLayout` support. This is a Log4j2
+module with no transitive dependencies beyond `log4j-core`.
+
+### 7. Phase 1 Coverage
+
+Phase 1 instruments the following components with structured context maps:
+
+**Server-side (6 components):**
+- `BrokerServer`, `ControllerServer`, `SharedServer` --- `kafka.node.id`, `kafka.component`
+- `BrokerLifecycleManager`, `AssignmentsManager`, `ControllerRegistrationManager` --- `kafka.node.id`, `kafka.component`
+
+**Client-side (3 components):**
+- `KafkaProducer` --- `kafka.client.id`, `kafka.client.type`, `kafka.transactional.id`
+- `KafkaConsumer` (via `ConsumerUtils`) --- `kafka.client.id`, `kafka.client.type`, `kafka.group.id`, `kafka.group.instance.id`
+- `KafkaAdminClient` --- `kafka.client.id`, `kafka.client.type`
+
+**Storage (1 component):**
+- `UnifiedLog` --- `kafka.topic`, `kafka.partition`, `kafka.component`
+
+**Scala `Logging` trait partial coverage:** The Scala `Logging` trait (used by ~100+
+classes like `ReplicaManager`, `KafkaApis`, `Partition`) does not go through
+`LogContext` and is not instrumented in Phase 1. As a partial mitigation,
+`BrokerServer` and `ControllerServer` set `kafka.node.id` in the thread-level MDC at
+startup, so Scala loggers on the main broker/controller threads inherit this basic
+context. Full coverage of the Scala `Logging` trait is Phase 3.
+
+## Performance Impact
+
+The per-call MDC save/push/restore pattern adds overhead only when `contextMap` is
+non-empty AND the log level is enabled:
+
+**When `contextMap` is empty (default):** Zero overhead. The `hasContext` flag
+short-circuits all MDC operations. Existing code paths are unaffected.
+
+**When `contextMap` is non-empty and level is disabled:** Zero overhead. Level guards
+(`isInfoEnabled()`, `isWarnEnabled()`, etc.) prevent any work.
+
+**When `contextMap` is non-empty and level is enabled:** Each log call performs:
+- 1 `HashMap` allocation (sized to contextMap, short-lived young-gen object)
+- N `MDC.get()` calls (save prior values)
+- N `MDC.put()` calls (push context)
+- N `MDC.put()` or `MDC.remove()` calls (restore)
+
+Where N is the number of context map entries (typically 2-3).
+
+This overhead is negligible compared to the cost of the log call itself (message
+formatting, string concatenation, I/O to log file, potential disk flush). MDC
+operations are `ThreadLocal` HashMap lookups --- each is ~10-20ns. For a typical
+context of 3 entries, the total overhead is ~100-200ns per log call, compared to
+~1-10us for message formatting and I/O.
+
+The `HashMap` allocation is in Java's young generation and collected immediately. On
+high-throughput brokers logging at INFO level, the additional allocation rate is
+bounded by the INFO/WARN/ERROR log rate (typically hundreds to low thousands per
+second), not the message processing rate (millions per second).
 
 ## Compatibility, Deprecation, and Migration Plan
 
@@ -280,11 +393,13 @@ with no transitive dependencies beyond `log4j-core`.
 
 1. **Phase 1 (this KIP)**: Add MDC infrastructure, JSON config files, and structured
    context to key components (BrokerServer, ControllerServer, KafkaProducer,
-   KafkaConsumer, KafkaAdminClient, UnifiedLog).
+   KafkaConsumer, KafkaAdminClient, UnifiedLog). See "Phase 1 Coverage" above for
+   the complete list.
 
 2. **Phase 2 (follow-up)**: Extend structured context to remaining components
    (ReplicaManager, KafkaApis, Partition, ReplicaFetcher, GroupCoordinator,
-   TransactionCoordinator, etc.).
+   TransactionCoordinator, Kafka Connect workers, etc.). Populate `kafka.cluster.id`,
+   `kafka.connector`, and `kafka.task.id`.
 
 3. **Phase 3 (follow-up)**: Migrate the Scala `Logging` trait with `logIdent` to also
    populate MDC, covering legacy Scala server code.
@@ -302,11 +417,10 @@ with no transitive dependencies beyond `log4j-core`.
   `ScopedValue`) or Log4j2 2.24+ for correct context propagation. This is not a
   concern today since Kafka does not use virtual threads internally.
 
-- **Scala `Logging` trait coverage**: The Scala `Logging` trait (used by ~100+ classes
-  like `ReplicaManager`, `KafkaApis`, `Partition`) does not go through `LogContext`.
-  As a partial mitigation, `BrokerServer` sets `kafka.node.id` in the thread-level MDC
-  at startup, providing basic context for Scala loggers on broker threads. Full
-  coverage requires Phase 3.
+- **Scala `Logging` trait coverage**: See "Phase 1 Coverage" above.
+
+- **Message prefix duplication**: See "Note on message prefix duplication" in the
+  Public Interfaces section.
 
 ## Rejected Alternatives
 
@@ -332,38 +446,69 @@ template file.
 Forcing JSON output would break existing log parsing pipelines, monitoring, and
 operational runbooks. Opt-in via config file swap is the safest migration path.
 
-### 5. Static MDC (set once per thread) instead of per-call push/pop
+### 5. Static MDC (set once per thread) instead of per-call save/push/restore
 
 Many Kafka components share threads (e.g., request handler threads process requests
 for different topics/partitions). Static MDC would cause cross-contamination of context
-fields. Per-call push/pop is the only correct approach for Kafka's threading model.
+fields between components. Per-call save/push/restore is the only correct approach for
+Kafka's threading model. The save/restore step ensures that pre-existing MDC values
+(from other frameworks like Kafka Connect's `LoggingContext`) are never clobbered.
+
+### 6. Broker configuration property (e.g., `log.format=json`)
+
+Log4j2 configuration is handled via the logging framework's own configuration system,
+not Kafka broker configuration. Adding a broker config would create a second, redundant
+mechanism for configuring the logging format and would not cover client-side or CLI
+tool logging. The environment variable approach (`KAFKA_LOG4J_OPTS`) is the established
+pattern for Kafka logging configuration and works consistently across all components.
+
+### 7. "Just configure MDC yourself"
+
+Users can already set MDC values manually and use `%X{key}` in Log4j2 patterns.
+However, this KIP provides value beyond what users can do themselves:
+- **Standardized key names** across all Kafka components (users would need to agree on
+  and enforce naming conventions)
+- **Pre-populated context** --- users don't need to instrument every component
+- **Correct save/restore** --- the `LogContext` wrapper handles Kafka's shared-thread
+  model correctly, which is non-trivial to implement in user code
+- **Official JSON template** --- a ready-to-use config file with the right schema
 
 ## Test Plan
 
-- Unit tests for `LogContext` verifying:
+### Implemented (in this KIP):
+
+- Unit tests for `LogContext` (`LogContextTest`, 18 tests) verifying:
   - MDC is populated during log calls and cleaned up after
+  - Pre-existing MDC values are saved and restored (not clobbered)
   - Empty context map results in zero MDC operations
-  - Existing MDC entries are not disturbed
+  - Existing MDC entries from other sources are not disturbed
   - Context map immutability
+  - Null contextMap parameter rejected with NullPointerException
   - Backward compatibility with prefix-only constructors
+  - Reentrancy safety (nested log calls don't corrupt MDC state)
+  - Concurrent thread safety (10 threads, 100 iterations each)
+
+### Planned (follow-up):
+
 - Integration test: start a broker with `log4j2-json.yaml`, verify log output is valid
   JSON with expected fields
-- Performance test: benchmark log throughput with empty vs. populated context map to
-  confirm negligible overhead
+- Performance test: JMH benchmark in `jmh-benchmarks/` comparing log throughput with
+  empty vs. populated context map
 
 ## Appendix: Files Changed
 
 | File | Change |
 |---|---|
-| `clients/.../LogContext.java` | Add `contextMap` field, MDC push/pop in log wrappers |
+| `clients/.../LogContext.java` | Add `contextMap` field, MDC save/push/restore in log wrappers, level guards on all methods |
+| `clients/.../LogContextTest.java` | 18 unit tests for MDC behavior |
 | `gradle/dependencies.gradle` | Add `log4j-layout-template-json` dependency |
 | `build.gradle` | Wire new dependency into `log4j2Libs` and `log4jReleaseLibs` |
 | `config/log4j2-json-template.json` | JSON template defining output schema |
 | `config/log4j2-json.yaml` | Server JSON logging config |
 | `config/connect-log4j2-json.yaml` | Connect JSON logging config |
 | `config/tools-log4j2-json.yaml` | Tools JSON logging config |
-| `core/.../BrokerServer.scala` | Pass structured context map |
-| `core/.../ControllerServer.scala` | Pass structured context map |
+| `core/.../BrokerServer.scala` | Pass structured context map; set thread-level MDC |
+| `core/.../ControllerServer.scala` | Pass structured context map; set thread-level MDC |
 | `core/.../SharedServer.scala` | Pass structured context map |
 | `clients/.../KafkaProducer.java` | Pass structured context map |
 | `clients/.../ConsumerUtils.java` | Pass structured context map |
