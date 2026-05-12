@@ -45,6 +45,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -116,12 +117,21 @@ public final class ConsumerUtils {
         Optional<String> groupId = Optional.ofNullable(groupRebalanceConfig.groupId);
         String clientId = config.getString(ConsumerConfig.CLIENT_ID_CONFIG);
 
+        Map<String, String> contextMap = new LinkedHashMap<>();
+        contextMap.put("kafka.client.id", clientId);
+        contextMap.put("kafka.client.type", "consumer");
+        contextMap.put("kafka.group.id", groupId.orElse("null"));
+        groupRebalanceConfig.groupInstanceId.ifPresent(
+                instanceId -> contextMap.put("kafka.group.instance.id", instanceId));
+
         // If group.instance.id is set, we will append it to the log context.
         if (groupRebalanceConfig.groupInstanceId.isPresent()) {
             return new LogContext("[Consumer instanceId=" + groupRebalanceConfig.groupInstanceId.get() +
-                    ", clientId=" + clientId + ", groupId=" + groupId.orElse("null") + "] ");
+                    ", clientId=" + clientId + ", groupId=" + groupId.orElse("null") + "] ",
+                    contextMap);
         } else {
-            return new LogContext("[Consumer clientId=" + clientId + ", groupId=" + groupId.orElse("null") + "] ");
+            return new LogContext("[Consumer clientId=" + clientId + ", groupId=" + groupId.orElse("null") + "] ",
+                    contextMap);
         }
     }
 

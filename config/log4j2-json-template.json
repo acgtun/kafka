@@ -1,0 +1,80 @@
+{
+  "timestamp": {
+    "$resolver": "timestamp",
+    "pattern": {
+      "format": "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+      "timeZone": "UTC"
+    }
+  },
+  "level": {
+    "$resolver": "level",
+    "field": "name"
+  },
+  "logger": {
+    "$resolver": "logger",
+    "field": "name"
+  },
+  "message": {
+    "$resolver": "message",
+    "stringified": true
+  },
+  "thread": {
+    "$resolver": "thread",
+    "field": "name"
+  },
+  "kafka.broker.id": {
+    "$resolver": "mdc",
+    "key": "kafka.broker.id"
+  },
+  "kafka.controller.id": {
+    "$resolver": "mdc",
+    "key": "kafka.controller.id"
+  },
+  "kafka.node.id": {
+    "$resolver": "mdc",
+    "key": "kafka.node.id"
+  },
+  "kafka.cluster.id": {
+    "$resolver": "mdc",
+    "key": "kafka.cluster.id"
+  },
+  "kafka.client.id": {
+    "$resolver": "mdc",
+    "key": "kafka.client.id"
+  },
+  "kafka.client.type": {
+    "$resolver": "mdc",
+    "key": "kafka.client.type"
+  },
+  "kafka.group.id": {
+    "$resolver": "mdc",
+    "key": "kafka.group.id"
+  },
+  "kafka.topic": {
+    "$resolver": "mdc",
+    "key": "kafka.topic"
+  },
+  "kafka.partition": {
+    "$resolver": "mdc",
+    "key": "kafka.partition"
+  },
+  "kafka.component": {
+    "$resolver": "mdc",
+    "key": "kafka.component"
+  },
+  "kafka.connector": {
+    "$resolver": "mdc",
+    "key": "kafka.connector"
+  },
+  "kafka.task.id": {
+    "$resolver": "mdc",
+    "key": "kafka.task.id"
+  },
+  "exception": {
+    "$resolver": "exception",
+    "field": "stackTrace",
+    "stackTrace": {
+      "stringified": true
+    }
+  }
+}

@@ -18,10 +18,15 @@ package org.apache.kafka.common.utils.internals;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.slf4j.Marker;
 import org.slf4j.helpers.FormattingTuple;
 import org.slf4j.helpers.MessageFormatter;
 import org.slf4j.spi.LocationAwareLogger;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * This class provides a way to instrument loggers with a common context which can be used to
@@ -29,17 +34,40 @@ import org.slf4j.spi.LocationAwareLogger;
  * the groupId of the consumer, so this can be added to a context object which can then be passed to
  * all of the dependent components in order to build new loggers. This removes the need to manually
  * add the groupId to each message.
+ *
+ * <p>In addition to the string prefix (which is prepended to every log message for human-readable
+ * output), a structured context map can be provided. When present, the context map entries are
+ * pushed to the SLF4J MDC before each log call, making them available as first-class fields in
+ * structured logging layouts (e.g., JSON). This enables machine-parseable log output for AI-driven
+ * debugging and log analysis tools.
  */
 public class LogContext {
 
     private final String logPrefix;
+    private final Map<String, String> contextMap;
 
     public LogContext(String logPrefix) {
+        this(logPrefix, Collections.emptyMap());
+    }
+
+    /**
+     * Create a LogContext with both a human-readable prefix and a structured context map.
+     * The prefix is prepended to every log message (backward-compatible behavior).
+     * The context map entries are pushed to SLF4J MDC on each log call, making them available
+     * as structured fields in JSON logging layouts.
+     *
+     * @param logPrefix   the string prefix for log messages (may be null or empty)
+     * @param contextMap  structured key-value pairs for MDC (may be empty but not null)
+     */
+    public LogContext(String logPrefix, Map<String, String> contextMap) {
         this.logPrefix = logPrefix == null ? "" : logPrefix;
+        this.contextMap = contextMap.isEmpty()
+                ? Collections.emptyMap()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(contextMap));
     }
 
     public LogContext() {
-        this("");
+        this("", Collections.emptyMap());
     }
 
     public Logger logger(Class<?> clazz) {
@@ -52,9 +80,9 @@ public class LogContext {
 
     private Logger logger(Logger logger) {
         if (logger instanceof LocationAwareLogger) {
-            return new LocationAwareKafkaLogger(logPrefix, (LocationAwareLogger) logger);
+            return new LocationAwareKafkaLogger(logPrefix, contextMap, (LocationAwareLogger) logger);
         } else {
-            return new LocationIgnorantKafkaLogger(logPrefix, logger);
+            return new LocationIgnorantKafkaLogger(logPrefix, contextMap, logger);
         }
     }
 
@@ -62,15 +90,47 @@ public class LogContext {
         return logPrefix;
     }
 
+    /**
+     * Returns the structured context map. When non-empty, these entries are pushed to
+     * SLF4J MDC on each log call.
+     */
+    public Map<String, String> contextMap() {
+        return contextMap;
+    }
+
     private abstract static class AbstractKafkaLogger implements Logger {
         private final String prefix;
+        private final Map<String, String> contextMap;
 
-        protected AbstractKafkaLogger(final String prefix) {
+        protected AbstractKafkaLogger(final String prefix, final Map<String, String> contextMap) {
             this.prefix = prefix;
+            this.contextMap = contextMap;
         }
 
         protected String addPrefix(final String message) {
             return prefix + message;
+        }
+
+        /**
+         * Push context map entries to MDC. Returns true if entries were pushed (and must be popped).
+         */
+        protected boolean pushMdc() {
+            if (contextMap.isEmpty()) {
+                return false;
+            }
+            for (Map.Entry<String, String> entry : contextMap.entrySet()) {
+                MDC.put(entry.getKey(), entry.getValue());
+            }
+            return true;
+        }
+
+        /**
+         * Remove context map entries from MDC.
+         */
+        protected void popMdc() {
+            for (String key : contextMap.keySet()) {
+                MDC.remove(key);
+            }
         }
     }
 
@@ -78,8 +138,8 @@ public class LogContext {
         private final LocationAwareLogger logger;
         private final String fqcn;
 
-        LocationAwareKafkaLogger(String logPrefix, LocationAwareLogger logger) {
-            super(logPrefix);
+        LocationAwareKafkaLogger(String logPrefix, Map<String, String> contextMap, LocationAwareLogger logger) {
+            super(logPrefix, contextMap);
             this.logger = logger;
             this.fqcn = LocationAwareKafkaLogger.class.getName();
         }
@@ -438,16 +498,34 @@ public class LogContext {
                 }
                 message = formatted.getMessage();
             }
-            logger.log(marker, fqcn, level, addPrefix(message), null, exception);
+            boolean pushed = pushMdc();
+            try {
+                logger.log(marker, fqcn, level, addPrefix(message), null, exception);
+            } finally {
+                if (pushed) {
+                    popMdc();
+                }
+            }
         }
     }
 
     private static class LocationIgnorantKafkaLogger extends AbstractKafkaLogger {
         private final Logger logger;
 
-        LocationIgnorantKafkaLogger(String logPrefix, Logger logger) {
-            super(logPrefix);
+        LocationIgnorantKafkaLogger(String logPrefix, Map<String, String> contextMap, Logger logger) {
+            super(logPrefix, contextMap);
             this.logger = logger;
+        }
+
+        private void logWithMdc(Runnable logAction) {
+            boolean pushed = pushMdc();
+            try {
+                logAction.run();
+            } finally {
+                if (pushed) {
+                    popMdc();
+                }
+            }
         }
 
         @Override
@@ -508,291 +586,291 @@ public class LogContext {
         @Override
         public void trace(String message) {
             if (logger.isTraceEnabled()) {
-                logger.trace(addPrefix(message));
+                logWithMdc(() -> logger.trace(addPrefix(message)));
             }
         }
 
         @Override
         public void trace(String message, Object arg) {
             if (logger.isTraceEnabled()) {
-                logger.trace(addPrefix(message), arg);
+                logWithMdc(() -> logger.trace(addPrefix(message), arg));
             }
         }
 
         @Override
         public void trace(String message, Object arg1, Object arg2) {
             if (logger.isTraceEnabled()) {
-                logger.trace(addPrefix(message), arg1, arg2);
+                logWithMdc(() -> logger.trace(addPrefix(message), arg1, arg2));
             }
         }
 
         @Override
         public void trace(String message, Object... args) {
             if (logger.isTraceEnabled()) {
-                logger.trace(addPrefix(message), args);
+                logWithMdc(() -> logger.trace(addPrefix(message), args));
             }
         }
 
         @Override
         public void trace(String msg, Throwable t) {
             if (logger.isTraceEnabled()) {
-                logger.trace(addPrefix(msg), t);
+                logWithMdc(() -> logger.trace(addPrefix(msg), t));
             }
         }
 
         @Override
         public void trace(Marker marker, String msg) {
             if (logger.isTraceEnabled()) {
-                logger.trace(marker, addPrefix(msg));
+                logWithMdc(() -> logger.trace(marker, addPrefix(msg)));
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object arg) {
             if (logger.isTraceEnabled()) {
-                logger.trace(marker, addPrefix(format), arg);
+                logWithMdc(() -> logger.trace(marker, addPrefix(format), arg));
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object arg1, Object arg2) {
             if (logger.isTraceEnabled()) {
-                logger.trace(marker, addPrefix(format), arg1, arg2);
+                logWithMdc(() -> logger.trace(marker, addPrefix(format), arg1, arg2));
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object... argArray) {
             if (logger.isTraceEnabled()) {
-                logger.trace(marker, addPrefix(format), argArray);
+                logWithMdc(() -> logger.trace(marker, addPrefix(format), argArray));
             }
         }
 
         @Override
         public void trace(Marker marker, String msg, Throwable t) {
             if (logger.isTraceEnabled()) {
-                logger.trace(marker, addPrefix(msg), t);
+                logWithMdc(() -> logger.trace(marker, addPrefix(msg), t));
             }
         }
 
         @Override
         public void debug(String message) {
             if (logger.isDebugEnabled()) {
-                logger.debug(addPrefix(message));
+                logWithMdc(() -> logger.debug(addPrefix(message)));
             }
         }
 
         @Override
         public void debug(String message, Object arg) {
             if (logger.isDebugEnabled()) {
-                logger.debug(addPrefix(message), arg);
+                logWithMdc(() -> logger.debug(addPrefix(message), arg));
             }
         }
 
         @Override
         public void debug(String message, Object arg1, Object arg2) {
             if (logger.isDebugEnabled()) {
-                logger.debug(addPrefix(message), arg1, arg2);
+                logWithMdc(() -> logger.debug(addPrefix(message), arg1, arg2));
             }
         }
 
         @Override
         public void debug(String message, Object... args) {
             if (logger.isDebugEnabled()) {
-                logger.debug(addPrefix(message), args);
+                logWithMdc(() -> logger.debug(addPrefix(message), args));
             }
         }
 
         @Override
         public void debug(String msg, Throwable t) {
             if (logger.isDebugEnabled()) {
-                logger.debug(addPrefix(msg), t);
+                logWithMdc(() -> logger.debug(addPrefix(msg), t));
             }
         }
 
         @Override
         public void debug(Marker marker, String msg) {
             if (logger.isDebugEnabled()) {
-                logger.debug(marker, addPrefix(msg));
+                logWithMdc(() -> logger.debug(marker, addPrefix(msg)));
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object arg) {
             if (logger.isDebugEnabled()) {
-                logger.debug(marker, addPrefix(format), arg);
+                logWithMdc(() -> logger.debug(marker, addPrefix(format), arg));
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object arg1, Object arg2) {
             if (logger.isDebugEnabled()) {
-                logger.debug(marker, addPrefix(format), arg1, arg2);
+                logWithMdc(() -> logger.debug(marker, addPrefix(format), arg1, arg2));
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object... arguments) {
             if (logger.isDebugEnabled()) {
-                logger.debug(marker, addPrefix(format), arguments);
+                logWithMdc(() -> logger.debug(marker, addPrefix(format), arguments));
             }
         }
 
         @Override
         public void debug(Marker marker, String msg, Throwable t) {
             if (logger.isDebugEnabled()) {
-                logger.debug(marker, addPrefix(msg), t);
+                logWithMdc(() -> logger.debug(marker, addPrefix(msg), t));
             }
         }
 
         @Override
         public void warn(String message) {
-            logger.warn(addPrefix(message));
+            logWithMdc(() -> logger.warn(addPrefix(message)));
         }
 
         @Override
         public void warn(String message, Object arg) {
-            logger.warn(addPrefix(message), arg);
+            logWithMdc(() -> logger.warn(addPrefix(message), arg));
         }
 
         @Override
         public void warn(String message, Object arg1, Object arg2) {
-            logger.warn(addPrefix(message), arg1, arg2);
+            logWithMdc(() -> logger.warn(addPrefix(message), arg1, arg2));
         }
 
         @Override
         public void warn(String message, Object... args) {
-            logger.warn(addPrefix(message), args);
+            logWithMdc(() -> logger.warn(addPrefix(message), args));
         }
 
         @Override
         public void warn(String msg, Throwable t) {
-            logger.warn(addPrefix(msg), t);
+            logWithMdc(() -> logger.warn(addPrefix(msg), t));
         }
 
         @Override
         public void warn(Marker marker, String msg) {
-            logger.warn(marker, addPrefix(msg));
+            logWithMdc(() -> logger.warn(marker, addPrefix(msg)));
         }
 
         @Override
         public void warn(Marker marker, String format, Object arg) {
-            logger.warn(marker, addPrefix(format), arg);
+            logWithMdc(() -> logger.warn(marker, addPrefix(format), arg));
         }
 
         @Override
         public void warn(Marker marker, String format, Object arg1, Object arg2) {
-            logger.warn(marker, addPrefix(format), arg1, arg2);
+            logWithMdc(() -> logger.warn(marker, addPrefix(format), arg1, arg2));
         }
 
         @Override
         public void warn(Marker marker, String format, Object... arguments) {
-            logger.warn(marker, addPrefix(format), arguments);
+            logWithMdc(() -> logger.warn(marker, addPrefix(format), arguments));
         }
 
         @Override
         public void warn(Marker marker, String msg, Throwable t) {
-            logger.warn(marker, addPrefix(msg), t);
+            logWithMdc(() -> logger.warn(marker, addPrefix(msg), t));
         }
 
         @Override
         public void error(String message) {
-            logger.error(addPrefix(message));
+            logWithMdc(() -> logger.error(addPrefix(message)));
         }
 
         @Override
         public void error(String message, Object arg) {
-            logger.error(addPrefix(message), arg);
+            logWithMdc(() -> logger.error(addPrefix(message), arg));
         }
 
         @Override
         public void error(String message, Object arg1, Object arg2) {
-            logger.error(addPrefix(message), arg1, arg2);
+            logWithMdc(() -> logger.error(addPrefix(message), arg1, arg2));
         }
 
         @Override
         public void error(String message, Object... args) {
-            logger.error(addPrefix(message), args);
+            logWithMdc(() -> logger.error(addPrefix(message), args));
         }
 
         @Override
         public void error(String msg, Throwable t) {
-            logger.error(addPrefix(msg), t);
+            logWithMdc(() -> logger.error(addPrefix(msg), t));
         }
 
         @Override
         public void error(Marker marker, String msg) {
-            logger.error(marker, addPrefix(msg));
+            logWithMdc(() -> logger.error(marker, addPrefix(msg)));
         }
 
         @Override
         public void error(Marker marker, String format, Object arg) {
-            logger.error(marker, addPrefix(format), arg);
+            logWithMdc(() -> logger.error(marker, addPrefix(format), arg));
         }
 
         @Override
         public void error(Marker marker, String format, Object arg1, Object arg2) {
-            logger.error(marker, addPrefix(format), arg1, arg2);
+            logWithMdc(() -> logger.error(marker, addPrefix(format), arg1, arg2));
         }
 
         @Override
         public void error(Marker marker, String format, Object... arguments) {
-            logger.error(marker, addPrefix(format), arguments);
+            logWithMdc(() -> logger.error(marker, addPrefix(format), arguments));
         }
 
         @Override
         public void error(Marker marker, String msg, Throwable t) {
-            logger.error(marker, addPrefix(msg), t);
+            logWithMdc(() -> logger.error(marker, addPrefix(msg), t));
         }
 
         @Override
         public void info(String message) {
-            logger.info(addPrefix(message));
+            logWithMdc(() -> logger.info(addPrefix(message)));
         }
 
         @Override
         public void info(String message, Object arg) {
-            logger.info(addPrefix(message), arg);
+            logWithMdc(() -> logger.info(addPrefix(message), arg));
         }
 
         @Override
         public void info(String message, Object arg1, Object arg2) {
-            logger.info(addPrefix(message), arg1, arg2);
+            logWithMdc(() -> logger.info(addPrefix(message), arg1, arg2));
         }
 
         @Override
         public void info(String message, Object... args) {
-            logger.info(addPrefix(message), args);
+            logWithMdc(() -> logger.info(addPrefix(message), args));
         }
 
         @Override
         public void info(String msg, Throwable t) {
-            logger.info(addPrefix(msg), t);
+            logWithMdc(() -> logger.info(addPrefix(msg), t));
         }
 
         @Override
         public void info(Marker marker, String msg) {
-            logger.info(marker, addPrefix(msg));
+            logWithMdc(() -> logger.info(marker, addPrefix(msg)));
         }
 
         @Override
         public void info(Marker marker, String format, Object arg) {
-            logger.info(marker, addPrefix(format), arg);
+            logWithMdc(() -> logger.info(marker, addPrefix(format), arg));
         }
 
         @Override
         public void info(Marker marker, String format, Object arg1, Object arg2) {
-            logger.info(marker, addPrefix(format), arg1, arg2);
+            logWithMdc(() -> logger.info(marker, addPrefix(format), arg1, arg2));
         }
 
         @Override
         public void info(Marker marker, String format, Object... arguments) {
-            logger.info(marker, addPrefix(format), arguments);
+            logWithMdc(() -> logger.info(marker, addPrefix(format), arguments));
         }
 
         @Override
         public void info(Marker marker, String msg, Throwable t) {
-            logger.info(marker, addPrefix(msg), t);
+            logWithMdc(() -> logger.info(marker, addPrefix(msg), t));
         }
 
     }

@@ -107,7 +107,13 @@ class SharedServer(
   KafkaMetricsReporter.startReporters(VerifiableProperties(sharedServerConfig.originals))
   KafkaYammerMetrics.INSTANCE.configure(sharedServerConfig.originals)
 
-  private val logContext: LogContext = new LogContext(s"[SharedServer id=${sharedServerConfig.nodeId}] ")
+  private val logContext: LogContext = new LogContext(
+    s"[SharedServer id=${sharedServerConfig.nodeId}] ",
+    java.util.Map.of(
+      "kafka.node.id", String.valueOf(sharedServerConfig.nodeId),
+      "kafka.component", "SharedServer"
+    )
+  )
   this.logIdent = logContext.logPrefix
   private var started = false
   private var usedByBroker: Boolean = false

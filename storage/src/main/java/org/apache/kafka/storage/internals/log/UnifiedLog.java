@@ -220,8 +220,12 @@ public class UnifiedLog implements AutoCloseable {
         this.logOffsetsListener = logOffsetsListener;
 
         this.logIdent = "[UnifiedLog partition=" + topicPartition() + ", dir=" + parentDir() + "] ";
-        this.logger = new LogContext(logIdent).logger(UnifiedLog.class);
-        this.futureTimestampLogger = new LogContext(logIdent).logger("LogFutureTimestampLogger");
+        Map<String, String> logContextMap = Map.of(
+                "kafka.topic", topicPartition().topic(),
+                "kafka.partition", String.valueOf(topicPartition().partition()),
+                "kafka.component", "UnifiedLog");
+        this.logger = new LogContext(logIdent, logContextMap).logger(UnifiedLog.class);
+        this.futureTimestampLogger = new LogContext(logIdent, logContextMap).logger("LogFutureTimestampLogger");
         this.highWatermarkMetadata = new LogOffsetMetadata(logStartOffset);
         this.localLogStartOffset = logStartOffset;
         this.producerExpireCheck = scheduler().schedule("PeriodicProducerExpirationCheck", () -> removeExpiredProducers(time().milliseconds()),

@@ -235,7 +235,10 @@ public class BrokerLifecycleManager {
         this.logDirs = logDirs;
         this.shutdownHook = shutdownHook;
         this.cordonedLogDirsSupported = cordonedLogDirsSupported;
-        LogContext logContext = new LogContext("[BrokerLifecycleManager id=" + this.config.nodeId() + "] ");
+        LogContext logContext = new LogContext(
+            "[BrokerLifecycleManager id=" + this.config.nodeId() + "] ",
+            Map.of("kafka.node.id", String.valueOf(this.config.nodeId()),
+                   "kafka.component", "BrokerLifecycleManager"));
         this.logger = logContext.logger(BrokerLifecycleManager.class);
         this.nodeId = config.nodeId();
         this.rack = config.rack();

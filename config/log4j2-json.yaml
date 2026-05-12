@@ -1,0 +1,136 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Structured JSON logging configuration for Kafka broker/controller.
+# To enable, set: KAFKA_LOG4J_OPTS="-Dlog4j2.configurationFile=file:config/log4j2-json.yaml"
+#
+# Each log line is a single JSON object with structured fields from MDC,
+# making logs machine-parseable for AI debugging tools and log aggregation systems.
+
+Configuration:
+  Properties:
+    Property:
+      - name: "kafka.logs.dir"
+        value: "."
+      - name: "jsonTemplate"
+        value: "classpath:log4j2-json-template.json"
+
+  Appenders:
+    Console:
+      name: STDOUT
+      JsonTemplateLayout:
+        eventTemplateUri: "${jsonTemplate}"
+
+    RollingFile:
+      - name: KafkaAppender
+        fileName: "${sys:kafka.logs.dir}/server.log"
+        filePattern: "${sys:kafka.logs.dir}/server.log.%d{yyyy-MM-dd-HH}"
+        JsonTemplateLayout:
+          eventTemplateUri: "${jsonTemplate}"
+        TimeBasedTriggeringPolicy:
+          modulate: true
+          interval: 1
+      - name: StateChangeAppender
+        fileName: "${sys:kafka.logs.dir}/state-change.log"
+        filePattern: "${sys:kafka.logs.dir}/state-change.log.%d{yyyy-MM-dd-HH}"
+        JsonTemplateLayout:
+          eventTemplateUri: "${jsonTemplate}"
+        TimeBasedTriggeringPolicy:
+          modulate: true
+          interval: 1
+      - name: RequestAppender
+        fileName: "${sys:kafka.logs.dir}/kafka-request.log"
+        filePattern: "${sys:kafka.logs.dir}/kafka-request.log.%d{yyyy-MM-dd-HH}"
+        JsonTemplateLayout:
+          eventTemplateUri: "${jsonTemplate}"
+        TimeBasedTriggeringPolicy:
+          modulate: true
+          interval: 1
+      - name: CleanerAppender
+        fileName: "${sys:kafka.logs.dir}/log-cleaner.log"
+        filePattern: "${sys:kafka.logs.dir}/log-cleaner.log.%d{yyyy-MM-dd-HH}"
+        JsonTemplateLayout:
+          eventTemplateUri: "${jsonTemplate}"
+        TimeBasedTriggeringPolicy:
+          modulate: true
+          interval: 1
+      - name: ControllerAppender
+        fileName: "${sys:kafka.logs.dir}/controller.log"
+        filePattern: "${sys:kafka.logs.dir}/controller.log.%d{yyyy-MM-dd-HH}"
+        JsonTemplateLayout:
+          eventTemplateUri: "${jsonTemplate}"
+        TimeBasedTriggeringPolicy:
+          modulate: true
+          interval: 1
+      - name: AuthorizerAppender
+        fileName: "${sys:kafka.logs.dir}/kafka-authorizer.log"
+        filePattern: "${sys:kafka.logs.dir}/kafka-authorizer.log.%d{yyyy-MM-dd-HH}"
+        JsonTemplateLayout:
+          eventTemplateUri: "${jsonTemplate}"
+        TimeBasedTriggeringPolicy:
+          modulate: true
+          interval: 1
+
+  Loggers:
+    Root:
+      level: INFO
+      AppenderRef:
+        - ref: STDOUT
+        - ref: KafkaAppender
+    Logger:
+      - name: kafka
+        level: INFO
+      - name: org.apache.kafka
+        level: INFO
+      - name: kafka.request.logger
+        level: WARN
+        additivity: false
+        AppenderRef:
+          ref: RequestAppender
+      - name: kafka.network.RequestChannel$
+        level: WARN
+        additivity: false
+        AppenderRef:
+          ref: RequestAppender
+      - name: org.apache.kafka.controller
+        level: INFO
+        additivity: false
+        AppenderRef:
+          ref: ControllerAppender
+      - name: org.apache.kafka.storage.internals.log.LogCleaner
+        level: INFO
+        additivity: false
+        AppenderRef:
+          ref: CleanerAppender
+      - name: org.apache.kafka.storage.internals.log.LogCleaner$CleanerThread
+        level: INFO
+        additivity: false
+        AppenderRef:
+          ref: CleanerAppender
+      - name: org.apache.kafka.storage.internals.log.Cleaner
+        level: INFO
+        additivity: false
+        AppenderRef:
+          ref: CleanerAppender
+      - name: state.change.logger
+        level: INFO
+        additivity: false
+        AppenderRef:
+          ref: StateChangeAppender
+      - name: kafka.authorizer.logger
+        level: INFO
+        additivity: false
+        AppenderRef:
+          ref: AuthorizerAppender

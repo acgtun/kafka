@@ -596,7 +596,8 @@ public class KafkaAdminClient extends AdminClient {
     }
 
     static LogContext createLogContext(String clientId) {
-        return new LogContext("[AdminClient clientId=" + clientId + "] ");
+        return new LogContext("[AdminClient clientId=" + clientId + "] ",
+                Map.of("kafka.client.id", clientId, "kafka.client.type", "admin"));
     }
 
     private KafkaAdminClient(AdminClientConfig config,
