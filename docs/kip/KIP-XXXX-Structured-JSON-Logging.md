@@ -52,6 +52,92 @@ default (KEP-1602, GA since 1.24). Elasticsearch, MongoDB, PostgreSQL, and most
 modern infrastructure software provide structured JSON log modes. Apache Kafka is a
 notable holdout.
 
+## Public Interfaces
+
+### 1. `LogContext` — New Constructor and Method
+
+`org.apache.kafka.common.utils.internals.LogContext` gains a new public constructor
+and accessor:
+
+```java
+/**
+ * Create a LogContext with both a human-readable prefix and a structured context map.
+ *
+ * @param logPrefix   the string prefix prepended to every log message (may be null)
+ * @param contextMap  structured key-value pairs pushed to SLF4J MDC on each log call
+ */
+public LogContext(String logPrefix, Map<String, String> contextMap)
+
+/** Returns the unmodifiable structured context map. */
+public Map<String, String> contextMap()
+```
+
+The existing constructors `LogContext()` and `LogContext(String)` are **unchanged** and
+continue to produce loggers with no MDC behavior (empty context map).
+
+**Note:** `LogContext` lives in the `internals` package and is not part of the official
+public API contract. However, it is widely used by Kafka internals and downstream
+projects that embed Kafka components, so the change is listed here for completeness.
+
+### 2. Standard MDC Key Names (Log Output Contract)
+
+When JSON logging is enabled, the following MDC keys appear as top-level JSON fields.
+These key names become a **stable public contract** — log consumers (dashboards, alerts,
+AI tools) will depend on them.
+
+| MDC Key | Type | Description |
+|---|---|---|
+| `kafka.node.id` | string | Broker or controller node ID |
+| `kafka.cluster.id` | string | Kafka cluster ID |
+| `kafka.component` | string | Component name (e.g., `BrokerServer`, `UnifiedLog`) |
+| `kafka.client.id` | string | Client ID (producer, consumer, admin) |
+| `kafka.client.type` | string | One of: `producer`, `consumer`, `admin` |
+| `kafka.group.id` | string | Consumer/share group ID |
+| `kafka.group.instance.id` | string | Static group membership instance ID |
+| `kafka.transactional.id` | string | Transactional producer ID |
+| `kafka.topic` | string | Topic name |
+| `kafka.partition` | string | Partition number |
+| `kafka.connector` | string | Kafka Connect connector name |
+| `kafka.task.id` | string | Kafka Connect task ID |
+| `kafka.controller.id` | string | KRaft active controller ID |
+
+All keys use the `kafka.` prefix to avoid collision with user-defined MDC entries.
+Keys whose MDC value is null are **omitted** from the JSON output (not emitted as
+`"kafka.topic": null`).
+
+### 3. JSON Log Schema (`log4j2-json-template.json`)
+
+The JSON template file defines the output schema for structured log events. Every JSON
+log line contains these fixed fields:
+
+| Field | Source | Description |
+|---|---|---|
+| `timestamp` | Log4j2 event | ISO-8601 timestamp in UTC |
+| `level` | Log4j2 event | Log level name (`INFO`, `WARN`, `ERROR`, etc.) |
+| `logger` | Log4j2 event | Logger name (fully qualified class name) |
+| `message` | Log4j2 event | The formatted log message (includes the `LogContext` prefix) |
+| `thread` | Log4j2 event | Thread name |
+| `exception` | Log4j2 event | Stack trace string (omitted when no exception) |
+| `kafka.*` | MDC | All standard MDC keys from the table above (omitted when null) |
+
+This template file is a configuration artifact, not compiled code. Users can customize
+it by providing their own template via the `eventTemplateUri` property in the Log4j2
+YAML config.
+
+### 4. New Runtime Dependency
+
+| Artifact | Version | Scope |
+|---|---|---|
+| `org.apache.logging.log4j:log4j-layout-template-json` | Same as `log4j-core` (currently 2.25.4) | Runtime (only needed when JSON config is active) |
+
+This artifact has no transitive dependencies beyond `log4j-core` (already a Kafka
+dependency). It is added to the `log4j2Libs` and `log4jReleaseLibs` dependency groups.
+
+### 5. No Wire Protocol Changes
+
+This KIP introduces **no changes** to the Kafka wire protocol, configuration properties,
+metrics, or JMX MBeans. The changes are purely in the logging infrastructure layer.
+
 ## Proposed Changes
 
 This KIP introduces **opt-in structured JSON logging** for all Kafka components (broker,
