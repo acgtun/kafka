@@ -905,6 +905,7 @@ class BrokerServer(
         fatal("Fatal error during broker shutdown.", e)
         throw e
     } finally {
+      org.slf4j.MDC.remove("kafka.node.id")
       maybeChangeStatus(SHUTTING_DOWN, SHUTDOWN)
     }
   }

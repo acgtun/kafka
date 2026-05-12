@@ -88,7 +88,7 @@ AI tools) will depend on them.
 | MDC Key | Type | Description |
 |---|---|---|
 | `kafka.node.id` | string | Broker or controller node ID |
-| `kafka.cluster.id` | string | Kafka cluster ID |
+| `kafka.cluster.id` | string | Kafka cluster ID (Phase 2 — reserved, not yet set) |
 | `kafka.component` | string | Component name (e.g., `BrokerServer`, `UnifiedLog`) |
 | `kafka.client.id` | string | Client ID (producer, consumer, admin) |
 | `kafka.client.type` | string | One of: `producer`, `consumer`, `admin` |
@@ -99,7 +99,6 @@ AI tools) will depend on them.
 | `kafka.partition` | string | Partition number |
 | `kafka.connector` | string | Kafka Connect connector name |
 | `kafka.task.id` | string | Kafka Connect task ID |
-| `kafka.controller.id` | string | KRaft active controller ID |
 
 All keys use the `kafka.` prefix to avoid collision with user-defined MDC entries.
 Keys whose MDC value is null are **omitted** from the JSON output (not emitted as
@@ -188,7 +187,7 @@ A set of standard MDC key names is defined for consistent structured output:
 | MDC Key | Description | Set by |
 |---|---|---|
 | `kafka.node.id` | Broker or controller node ID | BrokerServer, ControllerServer, SharedServer |
-| `kafka.cluster.id` | Kafka cluster ID | Set after cluster metadata is available |
+| `kafka.cluster.id` | Kafka cluster ID | Phase 2 — reserved in template, not yet set |
 | `kafka.component` | Component name (e.g., `BrokerServer`, `ReplicaManager`) | Each component |
 | `kafka.client.id` | Client ID | KafkaProducer, KafkaConsumer, KafkaAdminClient |
 | `kafka.client.type` | Client type: `producer`, `consumer`, `admin` | Client constructors |
@@ -199,7 +198,6 @@ A set of standard MDC key names is defined for consistent structured output:
 | `kafka.partition` | Partition number | UnifiedLog, per-partition components |
 | `kafka.connector` | Kafka Connect connector name | Connect workers |
 | `kafka.task.id` | Kafka Connect task ID | Connect tasks |
-| `kafka.controller.id` | KRaft active controller ID | Controller components |
 
 All key names use the `kafka.` prefix to avoid collision with user-defined MDC entries.
 

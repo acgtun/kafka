@@ -267,35 +267,35 @@ public class LogContext {
 
         @Override
         public void trace(Marker marker, String msg) {
-            if (logger.isTraceEnabled()) {
+            if (logger.isTraceEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.TRACE_INT, msg, null, null);
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object arg) {
-            if (logger.isTraceEnabled()) {
+            if (logger.isTraceEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.TRACE_INT, format, new Object[]{arg}, null);
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object arg1, Object arg2) {
-            if (logger.isTraceEnabled()) {
+            if (logger.isTraceEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.TRACE_INT, format, new Object[]{arg1, arg2}, null);
             }
         }
 
         @Override
         public void trace(Marker marker, String format, Object... argArray) {
-            if (logger.isTraceEnabled()) {
+            if (logger.isTraceEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.TRACE_INT, format, argArray, null);
             }
         }
 
         @Override
         public void trace(Marker marker, String msg, Throwable t) {
-            if (logger.isTraceEnabled()) {
+            if (logger.isTraceEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.TRACE_INT, msg, null, t);
             }
         }
@@ -339,35 +339,35 @@ public class LogContext {
 
         @Override
         public void debug(Marker marker, String msg) {
-            if (logger.isDebugEnabled()) {
+            if (logger.isDebugEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.DEBUG_INT, msg, null, null);
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object arg) {
-            if (logger.isDebugEnabled()) {
+            if (logger.isDebugEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.DEBUG_INT, format, new Object[]{arg}, null);
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object arg1, Object arg2) {
-            if (logger.isDebugEnabled()) {
+            if (logger.isDebugEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.DEBUG_INT, format, new Object[]{arg1, arg2}, null);
             }
         }
 
         @Override
         public void debug(Marker marker, String format, Object... arguments) {
-            if (logger.isDebugEnabled()) {
+            if (logger.isDebugEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.DEBUG_INT, format, arguments, null);
             }
         }
 
         @Override
         public void debug(Marker marker, String msg, Throwable t) {
-            if (logger.isDebugEnabled()) {
+            if (logger.isDebugEnabled(marker)) {
                 writeLog(marker, LocationAwareLogger.DEBUG_INT, msg, null, t);
             }
         }

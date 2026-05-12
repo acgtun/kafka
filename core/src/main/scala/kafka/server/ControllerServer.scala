@@ -139,6 +139,9 @@ class ControllerServer(
     val startupDeadline = Deadline.fromDelay(time, config.serverMaxStartupTimeMs, TimeUnit.MILLISECONDS)
     try {
       this.logIdent = logContext.logPrefix()
+      // Set thread-level MDC so that Scala-based loggers (which use the Logging trait
+      // rather than LogContext) also get structured context in JSON logging mode.
+      org.slf4j.MDC.put("kafka.node.id", String.valueOf(config.nodeId))
       info("Starting controller")
       config.dynamicConfig.initialize(clientTelemetryExporterPluginOpt = None)
 
@@ -496,6 +499,7 @@ class ControllerServer(
         fatal("Fatal error during controller shutdown.", e)
         throw e
     } finally {
+      org.slf4j.MDC.remove("kafka.node.id")
       maybeChangeStatus(SHUTTING_DOWN, SHUTDOWN)
     }
   }

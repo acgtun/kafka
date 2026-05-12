@@ -23,6 +23,7 @@ import org.slf4j.MDC;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -264,7 +265,7 @@ class LogContextTest {
 
         int threadCount = 10;
         Thread[] threads = new Thread[threadCount];
-        Throwable[] errors = new Throwable[1];
+        AtomicReference<Throwable> firstError = new AtomicReference<>();
 
         for (int i = 0; i < threadCount; i++) {
             final int threadNum = i;
@@ -274,13 +275,13 @@ class LogContextTest {
                         logger.info("thread " + threadNum + " iteration " + j);
                         String leftover = MDC.get("kafka.node.id");
                         if (leftover != null) {
-                            errors[0] = new AssertionError(
-                                    "MDC leaked on thread " + threadNum + ": kafka.node.id=" + leftover);
+                            firstError.compareAndSet(null, new AssertionError(
+                                    "MDC leaked on thread " + threadNum + ": kafka.node.id=" + leftover));
                             return;
                         }
                     }
                 } catch (Throwable e) {
-                    errors[0] = e;
+                    firstError.compareAndSet(null, e);
                 }
             });
         }
@@ -288,9 +289,8 @@ class LogContextTest {
         for (Thread t : threads) t.start();
         for (Thread t : threads) t.join(5000);
 
-        if (errors[0] != null) {
-            if (errors[0] instanceof Exception) throw (Exception) errors[0];
-            if (errors[0] instanceof Error) throw (Error) errors[0];
-        }
+        Throwable error = firstError.get();
+        if (error instanceof Exception) throw (Exception) error;
+        if (error instanceof Error) throw (Error) error;
     }
 }
