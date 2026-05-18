@@ -148,12 +148,14 @@ ext {
   log4jReleaseLibs = [
     libs.slf4jLog4j2,
     libs.log4j1Bridge2Api,
-    libs.jacksonDataformatYaml
+    libs.jacksonDataformatYaml,
+    libs.log4j2LayoutTemplateJson
   ]
 
   log4j2Libs = [
     libs.log4j2Api,
-    libs.log4j2Core
+    libs.log4j2Core,
+    libs.log4j2LayoutTemplateJson
   ]
 
   testLog4j2Libs = [

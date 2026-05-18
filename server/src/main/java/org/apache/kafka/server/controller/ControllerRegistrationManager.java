@@ -125,10 +125,11 @@ public class ControllerRegistrationManager implements MetadataPublisher {
         this.incarnationId = incarnationId;
         this.listenerInfo = listenerInfo;
         this.resendExponentialBackoff = resendExponentialBackoff;
-        LogContext logContext = new LogContext("[ControllerRegistrationManager" +
-                " id=" + this.nodeId +
-                " incarnation=" + this.incarnationId +
-                "] ");
+        LogContext logContext = new LogContext(
+                "[ControllerRegistrationManager id=" + this.nodeId +
+                " incarnation=" + this.incarnationId + "] ",
+                Map.of("kafka.node.id", String.valueOf(this.nodeId),
+                       "kafka.component", "ControllerRegistrationManager"));
         this.logger = logContext.logger(ControllerRegistrationManager.class);
         this.eventQueue = new KafkaEventQueue(time,
                 logContext,

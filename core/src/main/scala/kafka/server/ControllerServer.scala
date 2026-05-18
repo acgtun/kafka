@@ -81,7 +81,13 @@ class ControllerServer(
   private val metricsGroup = new KafkaMetricsGroup(metricsPackage, metricsClassName)
 
   val config = sharedServer.controllerConfig
-  val logContext = new LogContext(s"[ControllerServer id=${config.nodeId}] ")
+  val logContext = new LogContext(
+    s"[ControllerServer id=${config.nodeId}] ",
+    java.util.Map.of(
+      "kafka.node.id", String.valueOf(config.nodeId),
+      "kafka.component", "ControllerServer"
+    )
+  )
   val time = sharedServer.time
   def metrics = sharedServer.metrics
   def raftManager: KafkaRaftManager[ApiMessageAndVersion] = sharedServer.raftManager
@@ -133,7 +139,16 @@ class ControllerServer(
     val startupDeadline = Deadline.fromDelay(time, config.serverMaxStartupTimeMs, TimeUnit.MILLISECONDS)
     try {
       this.logIdent = logContext.logPrefix()
-      info("Starting controller")
+      // Set thread-level MDC only for the critical startup log line so that Scala-based
+      // loggers (which use the Logging trait rather than LogContext) also get structured
+      // context in JSON logging mode. We remove immediately after the log statement to
+      // avoid leaking kafka.node.id onto unrelated log lines emitted later on this thread.
+      org.slf4j.MDC.put("kafka.node.id", String.valueOf(config.nodeId))
+      try {
+        info("Starting controller")
+      } finally {
+        org.slf4j.MDC.remove("kafka.node.id")
+      }
       config.dynamicConfig.initialize(clientTelemetryExporterPluginOpt = None)
 
       maybeChangeStatus(STARTING, STARTED)
@@ -490,6 +505,7 @@ class ControllerServer(
         fatal("Fatal error during controller shutdown.", e)
         throw e
     } finally {
+      org.slf4j.MDC.remove("kafka.node.id")
       maybeChangeStatus(SHUTTING_DOWN, SHUTDOWN)
     }
   }

@@ -171,7 +171,10 @@ public final class AssignmentsManager {
         Function<Uuid, String> directoryIdToDescription,
         MetricsRegistry metricsRegistry
     ) {
-        this.log = new LogContext("[AssignmentsManager id=" + nodeId + "] ").
+        this.log = new LogContext(
+            "[AssignmentsManager id=" + nodeId + "] ",
+            Map.of("kafka.node.id", String.valueOf(nodeId),
+                   "kafka.component", "AssignmentsManager")).
             logger(AssignmentsManager.class);
         this.backoff = backoff;
         this.time = time;
