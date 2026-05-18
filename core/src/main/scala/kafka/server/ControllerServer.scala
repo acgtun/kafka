@@ -139,10 +139,16 @@ class ControllerServer(
     val startupDeadline = Deadline.fromDelay(time, config.serverMaxStartupTimeMs, TimeUnit.MILLISECONDS)
     try {
       this.logIdent = logContext.logPrefix()
-      // Set thread-level MDC so that Scala-based loggers (which use the Logging trait
-      // rather than LogContext) also get structured context in JSON logging mode.
+      // Set thread-level MDC only for the critical startup log line so that Scala-based
+      // loggers (which use the Logging trait rather than LogContext) also get structured
+      // context in JSON logging mode. We remove immediately after the log statement to
+      // avoid leaking kafka.node.id onto unrelated log lines emitted later on this thread.
       org.slf4j.MDC.put("kafka.node.id", String.valueOf(config.nodeId))
-      info("Starting controller")
+      try {
+        info("Starting controller")
+      } finally {
+        org.slf4j.MDC.remove("kafka.node.id")
+      }
       config.dynamicConfig.initialize(clientTelemetryExporterPluginOpt = None)
 
       maybeChangeStatus(STARTING, STARTED)

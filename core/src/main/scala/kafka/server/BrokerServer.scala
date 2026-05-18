@@ -198,12 +198,17 @@ class BrokerServer(
     if (!maybeChangeStatus(SHUTDOWN, STARTING)) return
     val startupDeadline = Deadline.fromDelay(time, config.serverMaxStartupTimeMs, TimeUnit.MILLISECONDS)
     try {
-      // Set thread-level MDC so that Scala-based loggers (which use the Logging trait
-      // rather than LogContext) also get structured context in JSON logging mode.
+      // Set thread-level MDC only for the critical startup log line so that Scala-based
+      // loggers (which use the Logging trait rather than LogContext) also get structured
+      // context in JSON logging mode. We remove immediately after the log statement to
+      // avoid leaking kafka.node.id onto unrelated log lines emitted later on this thread.
       org.slf4j.MDC.put("kafka.node.id", String.valueOf(config.nodeId))
+      try {
+        info("Starting broker")
+      } finally {
+        org.slf4j.MDC.remove("kafka.node.id")
+      }
       sharedServer.startForBroker()
-
-      info("Starting broker")
 
       val clientTelemetryExporterPlugin = new ClientTelemetryExporterPlugin()
 
