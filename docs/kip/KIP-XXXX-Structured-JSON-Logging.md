@@ -539,11 +539,54 @@ this KIP provides value beyond what users can do themselves:
 - Performance test: JMH benchmark in `jmh-benchmarks/` comparing log throughput with
   empty vs. populated context map
 
+## Principal Engineer Review Findings (Fresh Pass on Current State) & Resolutions
+
+A senior-principal-level review of the complete diff (risk, safety, correctness, API surface,
+maintainability, performance, and long-term operational impact) surfaced the following items.
+All were addressed before finalizing this revision:
+
+**P0 – Safety / Correctness**
+- **Scala MDC lifetime leak on startup thread**: `MDC.put("kafka.node.id")` in
+  `BrokerServer`/`ControllerServer` was removed only on the shutdown path. Any Scala
+  `Logging` trait log statements after "Starting broker" on the same thread would
+  incorrectly carry the field. **Fixed**: the put is now wrapped in try/finally and
+  removed immediately after the single critical startup log line.
+
+**P1 – API / Contract / Compatibility**
+- **Hard package relocation of `LogContext`**: The class moved from
+  `org.apache.kafka.common.utils.LogContext` to `...utils.internals.LogContext`
+  without a compatibility path. Any downstream code (Strimzi, custom tooling, test
+  helpers) doing a direct import would break at compile time. **Fixed**: added a
+  `@Deprecated` delegating `LogContext` at the original package location that
+  extends the internals implementation. Both old and new call sites continue to work.
+
+**P2 – Maintainability (High long-term risk)**
+- **Extreme boilerplate duplication** (~80 near-identical `push/try/finally/pop` blocks
+  across two logger wrapper classes). This was the root cause of earlier review
+  findings (unguarded levels). Every future SLF4J method addition or guard change
+  would have to be done twice, with high risk of drift. **Fixed**: introduced
+  `AbstractKafkaLogger.withMdc(Runnable)` helper. All 80 call sites in
+  `LocationIgnorantKafkaLogger` now delegate to the single implementation. The
+  critical MDC logic lives in one place. `LocationAwareKafkaLogger` already had a
+  central `writeLog` helper.
+
+**Suggestions / Polish (also implemented)**
+- Added explicit "Virtual threads / Loom" caveat to the KIP (MDC + carrier-thread
+  sharing requires the per-call save/restore discipline we already have; future
+  ScopedValue migration path noted when Log4j2 supports it).
+- Minor hardening of the concurrent test error reporting path.
+- Clarified in the KIP that the new `log4j2-json*.yaml` files are the recommended
+  way to opt in and that the layout jar is shipped in release artifacts.
+
+No P0/P1 correctness or safety issues remain. The design (per-call save/restore +
+level guards + opt-in JSON configs) is sound for production use.
+
 ## Appendix: Files Changed
 
 | File | Change |
 |---|---|
-| `clients/.../LogContext.java` | Add `contextMap` field, MDC save/push/restore in log wrappers, level guards on all methods |
+| `clients/.../LogContext.java` (internals) | Core MDC implementation + withMdc helper (post-refactor) |
+| `clients/.../LogContext.java` (utils, deprecated) | Source-compat shim delegating to internals implementation |
 | `clients/.../LogContextTest.java` | 18 unit tests for MDC behavior |
 | `gradle/dependencies.gradle` | Add `log4j-layout-template-json` dependency |
 | `build.gradle` | Wire new dependency into `log4j2Libs` and `log4jReleaseLibs` |
