@@ -68,6 +68,8 @@ abstract class AbstractFetcherThread(name: String,
   private val partitionStates = new PartitionStates[PartitionFetchState]
   protected val partitionMapLock = new ReentrantLock
   private val partitionMapCond = partitionMapLock.newCondition()
+  // Whether a partition may have a fetch state without a lag. Written under partitionMapLock.
+  @volatile private var mayHaveUnknownLag = false
 
   private val metricId = new ClientIdAndBroker(clientId, leader.brokerEndPoint().host, leader.brokerEndPoint().port)
   val fetcherStats = new FetcherStats(metricId)
@@ -246,10 +248,12 @@ abstract class AbstractFetcherThread(name: String,
     val partitionsWithError = mutable.Set[TopicPartition]()
     val divergingEndOffsets = mutable.Map.empty[TopicPartition, EpochEndOffset]
     var responseData: Map[TopicPartition, FetchData] = Map.empty
+    var fetchSucceeded = false
 
     try {
       trace(s"Sending fetch request $fetchRequest")
       responseData = leader.fetch(fetchRequest).asScala
+      fetchSucceeded = true
     } catch {
       case t: Throwable =>
         if (isRunning) {
@@ -392,11 +396,48 @@ abstract class AbstractFetcherThread(name: String,
       })
     }
 
+    if (fetchSucceeded && mayHaveUnknownLag)
+      settleUnknownLag(sessionPartitions, responseData)
+
     if (divergingEndOffsets.nonEmpty)
       truncateOnFetchResponse(divergingEndOffsets)
     if (partitionsWithError.nonEmpty) {
       handlePartitionsWithErrors(partitionsWithError, "processFetchRequest")
     }
+  }
+
+  /**
+   * Set the lag of a partition to zero if it is still unknown and the fetch response left the
+   * partition out. An incremental fetch response leaves out a partition that has no new records
+   * and whose high watermark has not changed, so the replica is at the leader's log end offset.
+   * Without this, the lag of such a partition stays unknown until records are produced to it.
+   *
+   * A response that is full, or that reports a fetch session error, also leaves out partitions.
+   * The next response that has records for such a partition sets its real lag.
+   */
+  private def settleUnknownLag(sessionPartitions: util.Map[TopicPartition, FetchRequest.PartitionData],
+                               responseData: Map[TopicPartition, FetchData]): Unit = {
+    LockUtils.inLock[Exception](partitionMapLock, () => {
+      val settled = mutable.Buffer[(TopicPartition, PartitionFetchState)]()
+      var unknownLagRemains = false
+      partitionStates.partitionStateMap.forEach { (topicPartition, state) =>
+        if (state.lag.isEmpty) {
+          val requested = sessionPartitions.get(topicPartition)
+          if (requested != null &&
+              !responseData.contains(topicPartition) &&
+              state.isReadyForFetch &&
+              requested.fetchOffset == state.fetchOffset &&
+              requested.currentLeaderEpoch.map[Boolean](_ == state.currentLeaderEpoch).orElse(true)) {
+            settled += topicPartition -> new PartitionFetchState(state.topicId, state.fetchOffset, Optional.of(0L),
+              state.currentLeaderEpoch, state.state, state.lastFetchedEpoch)
+          } else {
+            unknownLagRemains = true
+          }
+        }
+      }
+      settled.foreach { case (topicPartition, state) => partitionStates.update(topicPartition, state) }
+      mayHaveUnknownLag = unknownLagRemains
+    })
   }
 
   private def markPartitionFailed(topicPartition: TopicPartition): Unit = {
@@ -444,6 +485,7 @@ abstract class AbstractFetcherThread(name: String,
         val currentState = partitionStates.stateValue(tp)
         val updatedState = partitionFetchState(tp, initialFetchState, currentState)
         partitionStates.updateAndMoveToEnd(tp, updatedState)
+        if (updatedState.lag.isEmpty) mayHaveUnknownLag = true
       }
 
       partitionMapCond.signalAll()
