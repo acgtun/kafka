@@ -119,6 +119,36 @@ class AbstractFetcherManagerTest {
   }
 
   @Test
+  def testOutOfSyncPartitionCount(): Unit = {
+    val fetcher: AbstractFetcherThread = mock(classOf[AbstractFetcherThread])
+    val fetcherManager = new AbstractFetcherManager[AbstractFetcherThread]("fetcher-manager", "fetcher-manager", 2) {
+      override def createFetcherThread(fetcherId: Int, sourceBroker: BrokerEndPoint): AbstractFetcherThread = {
+        fetcher
+      }
+    }
+    assertEquals(0, fetcherManager.outOfSyncPartitionCount)
+
+    val tp = new TopicPartition("topic", 0)
+    val initialFetchState = InitialFetchState(
+      topicId = Some(Uuid.randomUuid()),
+      leader = new BrokerEndPoint(0, "localhost", 9092),
+      currentLeaderEpoch = 15,
+      initOffset = 10L)
+    when(fetcher.leader)
+      .thenReturn(new MockLeaderEndPoint(new BrokerEndPoint(0, "localhost", 9092)))
+    when(fetcher.addPartitions(Map(tp -> initialFetchState)))
+      .thenReturn(Set(tp))
+    when(fetcher.outOfSyncPartitionCount).thenReturn(3)
+
+    fetcherManager.addFetcherForPartitions(Map(tp -> initialFetchState))
+    assertEquals(3, fetcherManager.outOfSyncPartitionCount)
+
+    // A partition that failed is no longer fetched, so it is out of sync as well.
+    fetcherManager.failedPartitions.add(new TopicPartition("topic", 1))
+    assertEquals(4, fetcherManager.outOfSyncPartitionCount)
+  }
+
+  @Test
   def testDeadThreadCountMetric(): Unit = {
     val fetcher: AbstractFetcherThread = mock(classOf[AbstractFetcherThread])
     val fetcherManager = new AbstractFetcherManager[AbstractFetcherThread]("fetcher-manager", "fetcher-manager", 2) {

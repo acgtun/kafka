@@ -781,6 +781,21 @@ abstract class AbstractFetcherThread(name: String,
     finally partitionMapLock.unlock()
   }
 
+  /**
+   * The number of partitions of this thread that have not caught up to the leader's high watermark,
+   * or for which no fetch has completed yet.
+   */
+  def outOfSyncPartitionCount: Int = {
+    partitionMapLock.lockInterruptibly()
+    try {
+      var count = 0
+      partitionStates.partitionStateMap.forEach { (_, state) =>
+        if (!state.isReplicaInSync) count += 1
+      }
+      count
+    } finally partitionMapLock.unlock()
+  }
+
   def partitions: Set[TopicPartition] = {
     partitionMapLock.lockInterruptibly()
     try partitionStates.partitionSet.asScala.toSet

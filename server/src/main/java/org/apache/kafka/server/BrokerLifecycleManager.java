@@ -137,6 +137,13 @@ public class BrokerLifecycleManager {
     private Supplier<Long> highestMetadataOffsetProvider;
 
     /**
+     * A thread-safe, non-blocking callback function which gives this manager the number of
+     * partitions that the broker follows without having caught up to the leader, or -1 if it
+     * is unknown.
+     */
+    private volatile Supplier<Integer> outOfSyncPartitionsProvider = () -> -1;
+
+    /**
      * True only if we are ready to unfence the broker.  This variable can only be read or
      * written from the event queue thread.
      */
@@ -266,6 +273,14 @@ public class BrokerLifecycleManager {
         this.previousBrokerEpoch = previousBrokerEpoch;
         eventQueue.append(new StartupEvent(highestMetadataOffsetProvider,
                 channelManager, clusterId, advertisedListeners, supportedFeatures));
+    }
+
+    /**
+     * Set the callback that provides the number of out-of-sync follower partitions which is
+     * reported in each heartbeat. It must be thread-safe and must not block.
+     */
+    public void setOutOfSyncPartitionsProvider(Supplier<Integer> outOfSyncPartitionsProvider) {
+        this.outOfSyncPartitionsProvider = outOfSyncPartitionsProvider;
     }
 
     public CompletableFuture<Void> setReadyToUnfence() {
@@ -569,7 +584,8 @@ public class BrokerLifecycleManager {
             .setCurrentMetadataOffset(metadataOffset)
             .setWantFence(!readyToUnfence)
             .setWantShutDown(state == BrokerState.PENDING_CONTROLLED_SHUTDOWN)
-            .setOfflineLogDirs(new ArrayList<>(offlineDirs.keySet()));
+            .setOfflineLogDirs(new ArrayList<>(offlineDirs.keySet()))
+            .setOutOfSyncPartitions(outOfSyncPartitionsProvider.get());
         if (initialCatchUpFuture.isDone() && !initialCatchUpFuture.isCompletedExceptionally() && cordonedLogDirsSupported.get()) {
             data.setCordonedLogDirs(List.copyOf(cordonedLogDirs));
         }
