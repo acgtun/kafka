@@ -169,6 +169,49 @@ class AbstractFetcherThreadTest {
   }
 
   @Test
+  def testUnknownLagIsSettledWhenFetchResponseLeavesPartitionOut(): Unit = {
+    val partition = new TopicPartition("topic", 0)
+    // An incremental fetch response leaves out a partition that has nothing new.
+    val mockLeaderEndpoint = new MockLeaderEndPoint(version = version) {
+      override def fetch(fetchRequest: FetchRequest.Builder): java.util.Map[TopicPartition, FetchResponseData.PartitionData] =
+        java.util.Map.of()
+    }
+    val mockTierStateMachine = new MockTierStateMachine(mockLeaderEndpoint)
+    val fetcher = new MockFetcherThread(mockLeaderEndpoint, mockTierStateMachine)
+
+    fetcher.setReplicaState(partition, PartitionState(leaderEpoch = 0))
+    fetcher.addPartitions(Map(partition -> initialFetchState(topicIds.get(partition.topic), 0L, leaderEpoch = 0)))
+    fetcher.mockLeader.setLeaderState(partition, PartitionState(leaderEpoch = 0))
+    fetcher.mockLeader.setReplicaPartitionStateCallback(fetcher.replicaPartitionState)
+    assertEquals(Optional.empty, fetcher.fetchState(partition).get.lag)
+    assertEquals(1, fetcher.outOfSyncPartitionCount)
+
+    fetcher.doWork()
+    assertEquals(Optional.of(0L), fetcher.fetchState(partition).get.lag)
+    assertEquals(0, fetcher.outOfSyncPartitionCount)
+  }
+
+  @Test
+  def testUnknownLagIsNotSettledWhenFetchFails(): Unit = {
+    val partition = new TopicPartition("topic", 0)
+    val mockLeaderEndpoint = new MockLeaderEndPoint(version = version) {
+      override def fetch(fetchRequest: FetchRequest.Builder): java.util.Map[TopicPartition, FetchResponseData.PartitionData] =
+        throw new UnknownTopicIdException("Topic ID was unknown as expected for this test")
+    }
+    val mockTierStateMachine = new MockTierStateMachine(mockLeaderEndpoint)
+    val fetcher = new MockFetcherThread(mockLeaderEndpoint, mockTierStateMachine)
+
+    fetcher.setReplicaState(partition, PartitionState(leaderEpoch = 0))
+    fetcher.addPartitions(Map(partition -> initialFetchState(topicIds.get(partition.topic), 0L, leaderEpoch = 0)))
+    fetcher.mockLeader.setLeaderState(partition, PartitionState(leaderEpoch = 0))
+    fetcher.mockLeader.setReplicaPartitionStateCallback(fetcher.replicaPartitionState)
+
+    fetcher.doWork()
+    assertEquals(Optional.empty, fetcher.fetchState(partition).get.lag)
+    assertEquals(1, fetcher.outOfSyncPartitionCount)
+  }
+
+  @Test
   def testDelay(): Unit = {
     val partition = new TopicPartition("topic", 0)
     val fetchBackOffMs = 250
