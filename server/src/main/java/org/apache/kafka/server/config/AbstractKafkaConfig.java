@@ -98,6 +98,7 @@ public abstract class AbstractKafkaConfig extends AbstractConfig {
         QuotaConfig.CONFIG_DEF,
         BrokerSecurityConfigs.CONFIG_DEF,
         DelegationTokenManagerConfigs.CONFIG_DEF,
+        SoftFencingConfigs.CONFIG_DEF,
         AddPartitionsToTxnConfig.CONFIG_DEF,
         ClusterMirrorBrokerConfig.CONFIG_DEF
     ));

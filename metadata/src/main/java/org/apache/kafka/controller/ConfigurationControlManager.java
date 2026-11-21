@@ -805,6 +805,23 @@ public class ConfigurationControlManager {
             currentControllerConfig(), creationConfigs);
     }
 
+    /**
+     * Resolve the soft fencing configuration for this controller. The dynamic configs of this
+     * node take precedence over the dynamic cluster configs, which take precedence over the
+     * static configs.
+     */
+    SoftFencingConfig softFencingConfig() {
+        Map<String, String> nodeConfig = currentControllerConfig();
+        Map<String, String> clusterConfig = clusterConfig();
+        return SoftFencingConfig.fromConfigs(name -> {
+            Object value = nodeConfig.get(name);
+            if (value == null) {
+                value = clusterConfig.get(name);
+            }
+            return value == null ? staticConfig.get(name) : value;
+        });
+    }
+
     Map<String, String> clusterConfig() {
         Map<String, String> result = configData.get(DEFAULT_NODE);
         return (result == null) ? Map.of() : result;
