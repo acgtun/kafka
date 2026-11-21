@@ -32,8 +32,8 @@ public interface AlterPartitionListener {
     void markIsrShrink();
 
     /**
-     * Callback invoked when the ISR is expanded with a follower that is on ISR hold, which
-     * happens when the ISR would otherwise be below the minimum size.
+     * Callback invoked when the leader proposes to expand the ISR with a follower that is on
+     * ISR hold, which it does when the ISR would otherwise be below the minimum size.
      */
     void markIsrHoldBypass();
 
