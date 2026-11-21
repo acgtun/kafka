@@ -41,7 +41,7 @@ import org.apache.kafka.coordinator.share.ShareCoordinatorConfig
 import org.apache.kafka.coordinator.transaction.{TransactionLogConfig, TransactionStateManagerConfig}
 import org.apache.kafka.network.SocketServerConfigs
 import org.apache.kafka.raft.{KRaftConfigs, MetadataLogConfig, QuorumConfig}
-import org.apache.kafka.server.config.{AbstractKafkaConfig, DelegationTokenManagerConfigs, QuotaConfig, ReplicationConfigs, ServerConfigs, ServerLogConfigs, ServerTopicConfigSynonyms}
+import org.apache.kafka.server.config.{AbstractKafkaConfig, DelegationTokenManagerConfigs, QuotaConfig, ReplicationConfigs, ServerConfigs, ServerLogConfigs, ServerTopicConfigSynonyms, SoftFencingConfigs}
 import org.apache.kafka.server.log.remote.storage.RemoteLogManagerConfig
 import org.apache.kafka.server.metrics.MetricConfigs
 import org.apache.kafka.storage.internals.log.CleanerConfig
@@ -1220,6 +1220,13 @@ class KafkaConfigTest {
 
         /** Share coordinator configs */
         case ShareCoordinatorConfig.APPEND_LINGER_MS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", -2, -0.5)
+
+        // Soft fencing configs
+        case SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_boolean", "0")
+        case SoftFencingConfigs.SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "-1")
+        case SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "-1")
+        case SoftFencingConfigs.SOFT_FENCING_MAX_METADATA_LAG_MS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "-2")
+        case SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "-1")
 
         case _ => assertPropertyInvalid(baseProperties, name, "not_a_number", "-1")
       }
