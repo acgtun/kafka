@@ -408,6 +408,12 @@ public class ReplicationControlManager {
     private final SoftFenceManager softFenceManager;
 
     /**
+     * Decides when the brokers on ISR hold can be released. Which brokers are on hold is part
+     * of the broker registrations; this is only the soft state of the active controller.
+     */
+    private final IsrHoldManager isrHoldManager;
+
+    /**
      * How far behind the metadata log each broker is. This is soft state of the active controller.
      */
     private final MetadataLagTracker metadataLagTracker;
@@ -449,6 +455,7 @@ public class ReplicationControlManager {
         this.directoriesToPartitions = new TimelineHashMap<>(snapshotRegistry, 0);
         this.outOfSyncReplicaCounts = new TimelineHashMap<>(snapshotRegistry, 0);
         this.softFenceManager = new SoftFenceManager(logContext, clusterControl.metrics());
+        this.isrHoldManager = new IsrHoldManager(logContext);
         this.metadataLagTracker = new MetadataLagTracker();
     }
 
@@ -457,13 +464,16 @@ public class ReplicationControlManager {
      *
      * Soft fences are not stored in the metadata log, so we do not know which brokers the previous
      * active controller had soft-fenced. Soft-fence every unfenced broker that is still out of sync.
+     * ISR holds are stored in the metadata log, but not for how long each broker has been caught
+     * up, so that starts over.
      */
     void activate() {
         SoftFencingConfig config = configurationControl.softFencingConfig();
+        long nowNs = clusterControl.time().nanoseconds();
+        isrHoldManager.reconcile(clusterControl.brokersOnIsrHold(), nowNs);
         if (!config.enabled()) {
             return;
         }
-        long nowNs = clusterControl.time().nanoseconds();
         for (BrokerRegistration registration : clusterControl.brokerRegistrations().values()) {
             int brokerId = registration.id();
             int outOfSyncReplicas = outOfSyncReplicaCount(brokerId);
@@ -479,6 +489,7 @@ public class ReplicationControlManager {
      */
     void deactivate() {
         softFenceManager.clear("this controller is no longer active");
+        isrHoldManager.clear();
         metadataLagTracker.clear();
     }
 
@@ -533,15 +544,21 @@ public class ReplicationControlManager {
     }
 
     /**
-     * Lift the soft fence of the brokers that have caught up. No records are generated: the
-     * brokers become normal leader candidates again, and the next preferred leader election
-     * moves leadership back to them.
+     * Release the brokers on ISR hold that have caught up, and lift the soft fence of the
+     * brokers that have caught up.
+     *
+     * Releasing a broker from ISR hold generates a record, after which the partition leaders
+     * add the broker to the ISR again. Lifting a soft fence generates no record: the broker
+     * becomes a normal leader candidate again, and the next preferred leader election moves
+     * leadership back to it.
      */
     ControllerResult<Boolean> maybeLiftSoftFences() {
         SoftFencingConfig config = configurationControl.softFencingConfig();
+        List<ApiMessageAndVersion> records = new ArrayList<>();
+        maybeReleaseIsrHolds(config, records);
         if (!config.enabled()) {
             softFenceManager.clear("soft fencing is disabled");
-            return ControllerResult.of(List.of(), false);
+            return ControllerResult.of(records, false);
         }
         for (int brokerId : softFenceManager.softFencedBrokers()) {
             if (!clusterControl.isUnfenced(brokerId)) {
@@ -550,7 +567,24 @@ public class ReplicationControlManager {
         }
         softFenceManager.maybeLift(config, clusterControl.time().nanoseconds(),
             brokerId -> isSoftFenceExitConditionMet(config, brokerId));
-        return ControllerResult.of(List.of(), false);
+        return ControllerResult.of(records, false);
+    }
+
+    /**
+     * Generate a record for each broker on ISR hold that should be released: the brokers that
+     * have reported few enough out-of-sync partitions for long enough, the brokers that have
+     * been on hold for the maximum duration, and every broker if ISR hold is no longer active.
+     */
+    private void maybeReleaseIsrHolds(SoftFencingConfig config, List<ApiMessageAndVersion> records) {
+        long nowNs = clusterControl.time().nanoseconds();
+        isrHoldManager.reconcile(clusterControl.brokersOnIsrHold(), nowNs);
+        isrHoldManager.brokersToRelease(config, isIsrHoldActive(config), nowNs).forEach((brokerId, reason) -> {
+            log.info("Releasing broker {} from ISR hold: {}.", brokerId, reason);
+            records.add(new ApiMessageAndVersion(new BrokerRegistrationChangeRecord().
+                setBrokerId(brokerId).
+                setBrokerEpoch(clusterControl.brokerRegistrations().get(brokerId).epoch()).
+                setIsrHold(BrokerRegistrationIsrHoldChange.RELEASE.value()), (short) 4));
+        });
     }
 
     public void replay(TopicRecord record) {
@@ -1955,6 +1989,7 @@ public class ReplicationControlManager {
             states.next().fenced(),
             request.currentMetadataOffset());
         updateMetadataLag(brokerId, !states.next().fenced(), request.currentMetadataOffset());
+        isrHoldManager.report(brokerId, request.outOfSyncPartitions());
         if (featureControl.metadataVersionOrThrow().isDirectoryAssignmentSupported()) {
             handleDirectoriesOffline(brokerId, brokerEpoch, request.offlineLogDirs(), records);
         }

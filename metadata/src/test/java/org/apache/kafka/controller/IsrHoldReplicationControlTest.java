@@ -17,8 +17,10 @@
 package org.apache.kafka.controller;
 
 import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.message.BrokerHeartbeatRequestData;
 import org.apache.kafka.common.metadata.BrokerRegistrationChangeRecord;
+import org.apache.kafka.common.metadata.ConfigRecord;
 import org.apache.kafka.common.metadata.FeatureLevelRecord;
 import org.apache.kafka.metadata.BrokerRegistrationFencingChange;
 import org.apache.kafka.metadata.BrokerRegistrationIsrHoldChange;
@@ -161,5 +163,159 @@ public class IsrHoldReplicationControlTest {
         assertEquals(Set.of(1), ctx.clusterControl.brokersOnIsrHold());
         unfence(ctx, 2);
         assertEquals(Set.of(1, 2), ctx.clusterControl.brokersOnIsrHold());
+    }
+    /**
+     * Send a heartbeat in which the broker reports its number of out-of-sync partitions.
+     */
+    private static void heartbeat(ReplicationControlTestContext ctx, int brokerId, int outOfSyncPartitions) {
+        ctx.clusterControl.trackBrokerHeartbeat(brokerId, defaultBrokerEpoch(brokerId));
+        ctx.replay(ctx.replicationControl.processBrokerHeartbeat(new BrokerHeartbeatRequestData().
+            setBrokerId(brokerId).setBrokerEpoch(defaultBrokerEpoch(brokerId)).
+            setCurrentMetadataOffset(1).
+            setWantFence(false).setWantShutDown(false).
+            setOutOfSyncPartitions(outOfSyncPartitions), 0).records());
+    }
+
+    private static List<ApiMessageAndVersion> releaseRecords(int brokerId) {
+        return List.of(new ApiMessageAndVersion(new BrokerRegistrationChangeRecord().
+            setBrokerId(brokerId).setBrokerEpoch(defaultBrokerEpoch(brokerId)).
+            setIsrHold(BrokerRegistrationIsrHoldChange.RELEASE.value()), (short) 4));
+    }
+
+    /**
+     * Run the periodic check, replay its records and return them.
+     */
+    private static List<ApiMessageAndVersion> check(ReplicationControlTestContext ctx) {
+        List<ApiMessageAndVersion> records = ctx.replicationControl.maybeLiftSoftFences().records();
+        ctx.replay(records);
+        return records;
+    }
+
+    /**
+     * Create a context in which broker 0 is on ISR hold and soft-fenced, out of the ISR of one partition.
+     */
+    private static ReplicationControlTestContext contextWithBrokerOnIsrHold(String... staticConfigs) {
+        ReplicationControlTestContext.Builder builder = new ReplicationControlTestContext.Builder().
+            setStaticConfig(SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG, "true").
+            setStaticConfig(SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG, "1000").
+            setStaticConfig(SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG, "true");
+        for (int i = 0; i < staticConfigs.length; i += 2) {
+            builder.setStaticConfig(staticConfigs[i], staticConfigs[i + 1]);
+        }
+        ReplicationControlTestContext ctx = builder.build();
+        ctx.featureControl.replay(new FeatureLevelRecord().
+            setName(SoftFencingVersion.FEATURE_NAME).
+            setFeatureLevel(SoftFencingVersion.SFV_1.featureLevel()));
+        ctx.registerBrokers(0, 1, 2);
+        ctx.unfenceBrokers(0, 1, 2);
+        ctx.createTestTopic("foo", new int[][] {new int[] {0, 1, 2}});
+        ctx.fenceBrokers(0);
+        unfence(ctx, 0);
+        assertTrue(isrHold(ctx, 0));
+        return ctx;
+    }
+
+    @Test
+    public void testIsrHoldIsReleasedAfterBrokerReportsItHasCaughtUp() {
+        ReplicationControlTestContext ctx = contextWithBrokerOnIsrHold();
+
+        // A broker that reports nothing, or that is still behind, stays on hold.
+        assertEquals(List.of(), check(ctx));
+        ctx.time.sleep(5000);
+        assertEquals(List.of(), check(ctx));
+        heartbeat(ctx, 0, 1);
+        ctx.time.sleep(5000);
+        assertEquals(List.of(), check(ctx));
+
+        // It must report that it has caught up for the whole stable time.
+        heartbeat(ctx, 0, 0);
+        assertEquals(List.of(), check(ctx));
+        ctx.time.sleep(500);
+        heartbeat(ctx, 0, 1);
+        assertEquals(List.of(), check(ctx));
+        heartbeat(ctx, 0, 0);
+        assertEquals(List.of(), check(ctx));
+        ctx.time.sleep(999);
+        heartbeat(ctx, 0, 0);
+        assertEquals(List.of(), check(ctx));
+        ctx.time.sleep(1);
+        assertEquals(releaseRecords(0), check(ctx));
+        assertFalse(isrHold(ctx, 0));
+        assertEquals(List.of(), check(ctx));
+
+        // The broker is still soft-fenced: it has not joined the ISR of its partition yet.
+        assertEquals(1, ctx.replicationControl.outOfSyncReplicaCount(0));
+        assertEquals(Set.of(0), ctx.replicationControl.softFencedBrokers());
+    }
+
+    @Test
+    public void testIsrHoldIsReleasedAfterMaxDuration() {
+        ReplicationControlTestContext ctx = contextWithBrokerOnIsrHold(
+            SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, "60000");
+        assertEquals(List.of(), check(ctx));
+        heartbeat(ctx, 0, 7);
+        ctx.time.sleep(59999);
+        assertEquals(List.of(), check(ctx));
+        ctx.time.sleep(1);
+        assertEquals(releaseRecords(0), check(ctx));
+        assertFalse(isrHold(ctx, 0));
+        assertEquals(Set.of(), ctx.replicationControl.softFencedBrokers());
+    }
+
+    @Test
+    public void testIsrHoldIsReleasedWhenItIsDisabled() {
+        ReplicationControlTestContext ctx = contextWithBrokerOnIsrHold();
+        assertEquals(List.of(), check(ctx));
+        ctx.replay(List.of(new ApiMessageAndVersion(new ConfigRecord().
+            setResourceType(ConfigResource.Type.BROKER.id()).setResourceName("").
+            setName(SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG).setValue("false"), (short) 0)));
+        assertTrue(isrHold(ctx, 0));
+        assertEquals(releaseRecords(0), check(ctx));
+        assertFalse(isrHold(ctx, 0));
+        // Soft fencing itself is still enabled.
+        assertEquals(Set.of(0), ctx.replicationControl.softFencedBrokers());
+    }
+
+    @Test
+    public void testIsrHoldIsReleasedWhenSoftFencingIsDisabled() {
+        ReplicationControlTestContext ctx = contextWithBrokerOnIsrHold();
+        ctx.replay(List.of(new ApiMessageAndVersion(new ConfigRecord().
+            setResourceType(ConfigResource.Type.BROKER.id()).setResourceName("").
+            setName(SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG).setValue("false"), (short) 0)));
+        assertEquals(releaseRecords(0), check(ctx));
+        assertFalse(isrHold(ctx, 0));
+        assertEquals(Set.of(), ctx.replicationControl.softFencedBrokers());
+    }
+
+    @Test
+    public void testIsrHoldIsReleasedWhenFeatureIsDowngraded() {
+        ReplicationControlTestContext ctx = contextWithBrokerOnIsrHold();
+        ctx.featureControl.replay(new FeatureLevelRecord().
+            setName(SoftFencingVersion.FEATURE_NAME).
+            setFeatureLevel(SoftFencingVersion.SFV_0.featureLevel()));
+        assertEquals(releaseRecords(0), check(ctx));
+        assertFalse(isrHold(ctx, 0));
+    }
+
+    @Test
+    public void testNewActiveControllerReleasesIsrHold() {
+        ReplicationControlTestContext ctx = contextWithBrokerOnIsrHold();
+        heartbeat(ctx, 0, 0);
+        assertEquals(List.of(), check(ctx));
+        ctx.time.sleep(900);
+
+        // The hold is in the metadata, so it survives a controller failover. The time for which
+        // the broker has been caught up starts over.
+        ctx.replicationControl.deactivate();
+        ctx.replicationControl.activate();
+        assertTrue(isrHold(ctx, 0));
+        assertEquals(Set.of(0), ctx.replicationControl.softFencedBrokers());
+        ctx.time.sleep(100);
+        assertEquals(List.of(), check(ctx));
+        heartbeat(ctx, 0, 0);
+        assertEquals(List.of(), check(ctx));
+        ctx.time.sleep(1000);
+        assertEquals(releaseRecords(0), check(ctx));
+        assertFalse(isrHold(ctx, 0));
     }
 }
