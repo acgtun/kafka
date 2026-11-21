@@ -93,6 +93,7 @@ import org.apache.kafka.raft.KRaftConfigs;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 import org.apache.kafka.server.common.TopicIdPartition;
+import org.apache.kafka.server.config.SoftFencingConfigs;
 import org.apache.kafka.server.policy.CreateTopicPolicy;
 
 import org.junit.jupiter.api.Test;
@@ -733,6 +734,178 @@ public class ReplicationControlManagerTest {
         assertEquals(1, replication.outOfSyncReplicaCount(0));
         ctx.deleteTopic(anonymousContextFor(ApiKeys.DELETE_TOPICS), fooId);
         assertEquals(0, replication.outOfSyncReplicaCount(0));
+    }
+
+    private static ReplicationControlTestContext softFencingContext() {
+        return new ReplicationControlTestContext.Builder().
+            setStaticConfig(SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG, "true").
+            setStaticConfig(SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG, "1000").
+            build();
+    }
+
+    private ElectLeadersResponseData electPreferredLeader(
+        ReplicationControlManager replication,
+        String topic,
+        int partition
+    ) {
+        return replication.electLeaders(buildElectLeadersRequest(ElectionType.PREFERRED,
+            Map.of(topic, List.of(partition)))).response();
+    }
+
+    @Test
+    public void testSoftFencedBrokerIsNotElectedUntilItCatchesUp() {
+        ReplicationControlTestContext ctx = softFencingContext();
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2);
+        ctx.unfenceBrokers(0, 1, 2);
+        // A broker with nothing to catch up on is not soft-fenced.
+        assertEquals(Set.of(), replication.softFencedBrokers());
+        Uuid fooId = ctx.createTestTopic("foo", new int[][] {
+            new int[] {0, 1, 2}, new int[] {1, 2, 0}}).topicId();
+        TopicIdPartition foo0 = new TopicIdPartition(fooId, 0);
+        TopicIdPartition foo1 = new TopicIdPartition(fooId, 1);
+
+        ctx.fenceBrokers(0);
+        assertEquals(OptionalInt.of(1), ctx.currentLeader(foo0));
+        assertEquals(Set.of(), replication.softFencedBrokers());
+
+        // The broker comes back while it is out of the ISR of both partitions.
+        ctx.unfenceBrokers(0);
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+
+        // It rejoins the ISR of the partition it is the preferred leader of, but not of the other.
+        ctx.alterPartition(foo0, 1, isrWithDefaultEpoch(1, 2, 0), LeaderRecoveryState.RECOVERED);
+        assertEquals(1, replication.outOfSyncReplicaCount(0));
+        ctx.time.sleep(5000);
+        ctx.replay(replication.maybeLiftSoftFences().records());
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+
+        // Neither the periodic nor the requested preferred election moves leadership to it.
+        ControllerResult<Boolean> balanceResult = replication.maybeBalancePartitionLeaders();
+        assertEquals(List.of(), balanceResult.records());
+        assertEquals(PREFERRED_LEADER_NOT_AVAILABLE.code(), electPreferredLeader(replication, "foo", 0).
+            replicaElectionResults().get(0).partitionResult().get(0).errorCode());
+        assertEquals(OptionalInt.of(1), ctx.currentLeader(foo0));
+
+        // Once it has caught up, the soft fence is lifted after the stable time.
+        ctx.alterPartition(foo1, 1, isrWithDefaultEpoch(1, 2, 0), LeaderRecoveryState.RECOVERED);
+        assertEquals(0, replication.outOfSyncReplicaCount(0));
+        replication.maybeLiftSoftFences();
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+        ctx.time.sleep(999);
+        replication.maybeLiftSoftFences();
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+        ctx.time.sleep(1);
+        assertEquals(ControllerResult.of(List.of(), false), replication.maybeLiftSoftFences());
+        assertEquals(Set.of(), replication.softFencedBrokers());
+
+        // The next preferred election gives it its leadership back.
+        ctx.replay(replication.maybeBalancePartitionLeaders().records());
+        assertEquals(OptionalInt.of(0), ctx.currentLeader(foo0));
+    }
+
+    @Test
+    public void testSoftFencedBrokerIsElectedAsLastChoice() {
+        ReplicationControlTestContext ctx = softFencingContext();
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2);
+        ctx.unfenceBrokers(0, 1, 2);
+        Uuid fooId = ctx.createTestTopic("foo", new int[][] {
+            new int[] {0, 1, 2}, new int[] {1, 2, 0}, new int[] {2, 0, 1}}).topicId();
+        TopicIdPartition foo0 = new TopicIdPartition(fooId, 0);
+        TopicIdPartition foo2 = new TopicIdPartition(fooId, 2);
+
+        ctx.fenceBrokers(0);
+        ctx.unfenceBrokers(0);
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+        ctx.alterPartition(foo0, 1, isrWithDefaultEpoch(1, 2, 0), LeaderRecoveryState.RECOVERED);
+        ctx.alterPartition(foo2, 2, isrWithDefaultEpoch(2, 1, 0), LeaderRecoveryState.RECOVERED);
+
+        // When the leader of foo-0 goes away, broker 2 is elected ahead of broker 0, even though
+        // broker 0 comes first in the replica list.
+        ctx.fenceBrokers(1);
+        assertEquals(OptionalInt.of(2), ctx.currentLeader(foo0));
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+
+        // When broker 2 goes away too, broker 0 is the only choice and is elected.
+        ctx.fenceBrokers(Set.of(1, 2));
+        assertEquals(OptionalInt.of(0), ctx.currentLeader(foo0));
+        assertEquals(OptionalInt.of(0), ctx.currentLeader(foo2));
+        assertArrayEquals(new int[] {0}, replication.getPartition(fooId, 0).isr);
+    }
+
+    @Test
+    public void testSoftFencingIsDisabledByDefault() {
+        ReplicationControlTestContext ctx = new ReplicationControlTestContext.Builder().build();
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2);
+        ctx.unfenceBrokers(0, 1, 2);
+        Uuid fooId = ctx.createTestTopic("foo", new int[][] {new int[] {0, 1, 2}}).topicId();
+        TopicIdPartition foo0 = new TopicIdPartition(fooId, 0);
+        ctx.fenceBrokers(0);
+        ctx.unfenceBrokers(0);
+        assertEquals(1, replication.outOfSyncReplicaCount(0));
+        assertEquals(Set.of(), replication.softFencedBrokers());
+        replication.activate();
+        assertEquals(Set.of(), replication.softFencedBrokers());
+        ctx.alterPartition(foo0, 1, isrWithDefaultEpoch(1, 2, 0), LeaderRecoveryState.RECOVERED);
+        ctx.replay(replication.maybeBalancePartitionLeaders().records());
+        assertEquals(OptionalInt.of(0), ctx.currentLeader(foo0));
+    }
+
+    @Test
+    public void testSoftFencesAreRebuiltOnActivationAndClearedWhenDisabled() {
+        ReplicationControlTestContext ctx = softFencingContext();
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2, 3);
+        ctx.unfenceBrokers(0, 1, 2);
+        ctx.createTestTopic("foo", new int[][] {new int[] {0, 1, 2}, new int[] {1, 2, 0}});
+        ctx.fenceBrokers(Set.of(0, 3));
+        ctx.unfenceBrokers(0);
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+
+        // A controller that loses and regains leadership soft-fences the unfenced brokers that are
+        // out of sync. Broker 3 is fenced and brokers 1 and 2 are in sync.
+        replication.deactivate();
+        assertEquals(Set.of(), replication.softFencedBrokers());
+        replication.activate();
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+
+        // Fencing the broker drops the soft fence.
+        ctx.fenceBrokers(Set.of(0, 3));
+        assertEquals(Set.of(), replication.softFencedBrokers());
+        ctx.unfenceBrokers(0);
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+
+        // Turning the feature off lifts every soft fence at the next check.
+        ctx.replay(List.of(new ApiMessageAndVersion(new ConfigRecord().
+            setResourceType(ConfigResource.Type.BROKER.id()).setResourceName("").
+            setName(SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG).setValue("false"), (short) 0)));
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+        replication.maybeLiftSoftFences();
+        assertEquals(Set.of(), replication.softFencedBrokers());
+    }
+
+    @Test
+    public void testSoftFenceIsLiftedAfterMaxDuration() {
+        ReplicationControlTestContext ctx = new ReplicationControlTestContext.Builder().
+            setStaticConfig(SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG, "true").
+            setStaticConfig(SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, "60000").
+            build();
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2);
+        ctx.unfenceBrokers(0, 1, 2);
+        ctx.createTestTopic("foo", new int[][] {new int[] {0, 1, 2}});
+        ctx.fenceBrokers(0);
+        ctx.unfenceBrokers(0);
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+        ctx.time.sleep(59999);
+        replication.maybeLiftSoftFences();
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+        ctx.time.sleep(1);
+        replication.maybeLiftSoftFences();
+        assertEquals(Set.of(), replication.softFencedBrokers());
+        assertEquals(1, replication.outOfSyncReplicaCount(0));
     }
 
     @Test
