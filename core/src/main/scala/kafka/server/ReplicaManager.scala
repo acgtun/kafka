@@ -87,6 +87,7 @@ import scala.jdk.OptionConverters.RichOptional
 
 object ReplicaManager {
   val HighWatermarkFilename = "replication-offset-checkpoint"
+  val OutOfSyncFollowerPartitionCountIntervalMs = 1000L
 
   private val timestampMinSupportedVersion: immutable.Map[Long, Short] = immutable.Map[Long, Short](
     ListOffsetsRequest.EARLIEST_TIMESTAMP -> 1.toShort,
@@ -246,11 +247,27 @@ class ReplicaManager(val config: KafkaConfig,
 
   def getLog(topicPartition: TopicPartition): Option[UnifiedLog] = logManager.getLog(topicPartition).toScala
 
+  // Counting takes the lock of every fetcher thread, so the count is refreshed in the background
+  // and the broker heartbeat reads the cached value.
+  @volatile private var cachedOutOfSyncFollowerPartitionCount = -1
+
+  /**
+   * The number of partitions that this broker follows without having caught up to the leader's
+   * high watermark, or -1 if it has not been computed yet.
+   */
+  def outOfSyncFollowerPartitionCount: Int = cachedOutOfSyncFollowerPartitionCount
+
+  private[server] def updateOutOfSyncFollowerPartitionCount(): Unit = {
+    cachedOutOfSyncFollowerPartitionCount = replicaFetcherManager.outOfSyncPartitionCount
+  }
+
   def startup(): Unit = {
     // start ISR expiration thread
     // A follower can lag behind leader for up to config.replicaLagTimeMaxMs x 1.5 before it is removed from ISR
     scheduler.schedule("isr-expiration", () => maybeShrinkIsr(), 0L, config.replicaLagTimeMaxMs / 2)
     scheduler.schedule("shutdown-idle-replica-alter-log-dirs-thread", () => shutdownIdleReplicaAlterLogDirsThread(), 0L, 10000L)
+    scheduler.schedule("out-of-sync-follower-partition-count", () => updateOutOfSyncFollowerPartitionCount(), 0L,
+      ReplicaManager.OutOfSyncFollowerPartitionCountIntervalMs)
 
     logDirFailureHandler = new LogDirFailureHandler("LogDirFailureHandler")
     logDirFailureHandler.start()
@@ -2380,6 +2397,8 @@ class ReplicaManager(val config: KafkaConfig,
 
         replicaFetcherManager.shutdownIdleFetcherThreads()
         replicaAlterLogDirsManager.shutdownIdleFetcherThreads()
+        // The next heartbeat must not report a count from before the followers changed.
+        updateOutOfSyncFollowerPartitionCount()
 
         remoteLogManager.foreach(rlm => rlm.onLeadershipChange((leaderChangedPartitions.toSet: Set[TopicPartitionLog]).asJava, (followerChangedPartitions.toSet: Set[TopicPartitionLog]).asJava, localChanges.topicIds()))
       }

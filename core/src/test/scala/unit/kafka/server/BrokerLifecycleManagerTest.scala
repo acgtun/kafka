@@ -33,6 +33,7 @@ import org.apache.kafka.server.BrokerLifecycleManager
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{AfterEach, Test, Timeout}
 
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{CompletableFuture, Future}
 import scala.jdk.CollectionConverters._
 
@@ -251,6 +252,31 @@ class BrokerLifecycleManagerTest {
     assertEquals(Set("h3sC4Yk-Q9-fd0ntJTocCA", "ej8Q9_d2Ri6FXNiTxKFiow"), nextHeartbeatDirs())
     manager.propagateDirectoryFailure(Uuid.fromString("1iF76HVNRPqC7Y4r6647eg"), Integer.MAX_VALUE)
     assertEquals(Set("h3sC4Yk-Q9-fd0ntJTocCA", "ej8Q9_d2Ri6FXNiTxKFiow", "1iF76HVNRPqC7Y4r6647eg"), nextHeartbeatDirs())
+  }
+
+  @Test
+  def testHeartbeatIncludesOutOfSyncPartitions(): Unit = {
+    val ctx = new RegistrationTestContext(configProperties)
+    manager = new BrokerLifecycleManager(ctx.config, ctx.time, "out-of-sync-partitions-sent-in-heartbeat-", logDirs)
+    val controllerNode = new Node(3000, "localhost", 8021)
+    ctx.controllerNodeProvider.node.set(controllerNode)
+
+    val registration = prepareResponse(ctx, new BrokerRegistrationResponse(new BrokerRegistrationResponseData().setBrokerEpoch(1000)))
+    manager.start(() => ctx.highestMetadataOffset.get(),
+      ctx.mockChannelManager, ctx.clusterId, ctx.advertisedListeners,
+      Collections.emptyMap(), OptionalLong.empty())
+    poll(ctx, manager, registration)
+
+    def nextHeartbeatOutOfSyncPartitions(): Int =
+      poll(ctx, manager, prepareResponse[BrokerHeartbeatRequest](ctx, new BrokerHeartbeatResponse(new BrokerHeartbeatResponseData())))
+        .data().outOfSyncPartitions()
+    // Unknown until a provider is set.
+    assertEquals(-1, nextHeartbeatOutOfSyncPartitions())
+    val outOfSyncPartitions = new AtomicInteger(7)
+    manager.setOutOfSyncPartitionsProvider(() => Integer.valueOf(outOfSyncPartitions.get()))
+    assertEquals(7, nextHeartbeatOutOfSyncPartitions())
+    outOfSyncPartitions.set(0)
+    assertEquals(0, nextHeartbeatOutOfSyncPartitions())
   }
 
   @Test

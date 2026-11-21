@@ -66,6 +66,15 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
 
   private[server] def deadThreadCount: Int = lock synchronized { fetcherThreadMap.values.count(_.isThreadFailed) }
 
+  /**
+   * The number of partitions that have not caught up to the leader's high watermark, including the
+   * partitions that failed and are no longer fetched. This waits for the lock of every fetcher thread,
+   * so it must not be called from a thread that cannot afford to block.
+   */
+  def outOfSyncPartitionCount: Int = lock synchronized {
+    failedPartitions.size + fetcherThreadMap.values.map(_.outOfSyncPartitionCount).sum
+  }
+
   def resizeThreadPool(newSize: Int): Unit = {
     def migratePartitions(newSize: Int): Unit = {
       val allRemovedPartitionsMap = mutable.Map[TopicPartition, InitialFetchState]()
