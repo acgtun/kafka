@@ -67,6 +67,22 @@ public class PartitionChangeBuilder {
     /**
      * Election types.
      */
+    /**
+     * Told when the leader that the builder elects was affected by soft fencing.
+     */
+    public interface SoftFencedElectionListener {
+        /**
+         * A new leader was elected, and a soft-fenced replica that comes before it in the replica
+         * list was passed over.
+         */
+        default void softFencedReplicaSkipped() { }
+
+        /**
+         * A soft-fenced replica was elected in a clean election, because no other replica was valid.
+         */
+        default void softFencedLeaderElected() { }
+    }
+
     public enum Election {
         /**
          * Perform leader election to keep the partition online. Elect the preferred replica if it is in the ISR.
@@ -87,6 +103,8 @@ public class PartitionChangeBuilder {
     private final int partitionId;
     private final IntPredicate isAcceptableLeader;
     private IntPredicate isSoftFenced = replica -> false;
+    private SoftFencedElectionListener softFencedElectionListener = new SoftFencedElectionListener() { };
+    private boolean softFencedReplicaSkipped = false;
     private final MetadataVersion metadataVersion;
     private final int minISR;
     private final Map<Integer, Uuid> targetDirectories;
@@ -171,6 +189,15 @@ public class PartitionChangeBuilder {
      */
     public PartitionChangeBuilder setIsSoftFenced(IntPredicate isSoftFenced) {
         this.isSoftFenced = isSoftFenced;
+        return this;
+    }
+
+    /**
+     * Set the soft-fenced replicas, and a listener to tell when an election was affected by them.
+     */
+    public PartitionChangeBuilder setSoftFencing(IntPredicate isSoftFenced, SoftFencedElectionListener listener) {
+        this.isSoftFenced = isSoftFenced;
+        this.softFencedElectionListener = listener;
         return this;
     }
 
@@ -351,6 +378,7 @@ public class PartitionChangeBuilder {
                 continue;
             }
             if (!isSoftFenced.test(replica)) {
+                softFencedReplicaSkipped = softFencedLeader.isPresent();
                 return Optional.of(replica);
             }
             if (softFencedLeader.isEmpty()) {
@@ -380,6 +408,12 @@ public class PartitionChangeBuilder {
                     topicId, partitionId, electionResult.node);
             }
             record.setLeader(electionResult.node);
+            if (softFencedReplicaSkipped) {
+                softFencedElectionListener.softFencedReplicaSkipped();
+            } else if (!electionResult.unclean && electionResult.node != NO_LEADER &&
+                    isSoftFenced.test(electionResult.node)) {
+                softFencedElectionListener.softFencedLeaderElected();
+            }
             if (electionResult.unclean) {
                 // If the election was unclean, we have to forcibly set the ISR to just the
                 // new leader. This can result in data loss!

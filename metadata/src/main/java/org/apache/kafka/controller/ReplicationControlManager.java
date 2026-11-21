@@ -447,7 +447,7 @@ public class ReplicationControlManager {
         this.imbalancedPartitions = new TimelineHashSet<>(snapshotRegistry, 0);
         this.directoriesToPartitions = new TimelineHashMap<>(snapshotRegistry, 0);
         this.outOfSyncReplicaCounts = new TimelineHashMap<>(snapshotRegistry, 0);
-        this.softFenceManager = new SoftFenceManager(logContext);
+        this.softFenceManager = new SoftFenceManager(logContext, clusterControl.metrics());
         this.metadataLagTracker = new MetadataLagTracker();
     }
 
@@ -1282,7 +1282,7 @@ public class ReplicationControlManager {
                     featureControl.metadataVersionOrThrow(),
                     getTopicEffectiveMinIsr(topic.name),
                     featureControl.isElrFeatureEnabled()
-                ).setIsSoftFenced(softFenceManager::isSoftFenced);
+                ).setSoftFencing(softFenceManager::isSoftFenced, softFenceManager);
                 if (configurationControl.uncleanLeaderElectionEnabledForTopic(topic.name())) {
                     builder.setElection(PartitionChangeBuilder.Election.UNCLEAN);
                 }
@@ -1872,7 +1872,7 @@ public class ReplicationControlManager {
             getTopicEffectiveMinIsr(topic),
             featureControl.isElrFeatureEnabled()
         )
-            .setIsSoftFenced(softFenceManager::isSoftFenced)
+            .setSoftFencing(softFenceManager::isSoftFenced, softFenceManager)
             .setElection(election)
             .setDefaultDirProvider(clusterDescriber)
             .build();
@@ -2041,7 +2041,7 @@ public class ReplicationControlManager {
                 getTopicEffectiveMinIsr(topic.name),
                 featureControl.isElrFeatureEnabled()
             )
-                .setIsSoftFenced(softFenceManager::isSoftFenced)
+                .setSoftFencing(softFenceManager::isSoftFenced, softFenceManager)
                 .setElection(PartitionChangeBuilder.Election.PREFERRED)
                 .setDefaultDirProvider(clusterDescriber)
                 .build().ifPresent(records::add);
@@ -2324,7 +2324,7 @@ public class ReplicationControlManager {
                 featureControl.metadataVersionOrThrow(),
                 getTopicEffectiveMinIsr(topic.name),
                 featureControl.isElrFeatureEnabled()
-            ).setIsSoftFenced(softFenceManager::isSoftFenced);
+            ).setSoftFencing(softFenceManager::isSoftFenced, softFenceManager);
             if (configurationControl.uncleanLeaderElectionEnabledForTopic(topic.name)) {
                 builder.setElection(PartitionChangeBuilder.Election.UNCLEAN);
             }
@@ -2444,7 +2444,7 @@ public class ReplicationControlManager {
             featureControl.metadataVersionOrThrow(),
             getTopicEffectiveMinIsr(topicName),
             featureControl.isElrFeatureEnabled()
-        ).setIsSoftFenced(softFenceManager::isSoftFenced);
+        ).setSoftFencing(softFenceManager::isSoftFenced, softFenceManager);
         if (configurationControl.uncleanLeaderElectionEnabledForTopic(topicName)) {
             builder.setElection(PartitionChangeBuilder.Election.UNCLEAN);
         }
@@ -2510,7 +2510,7 @@ public class ReplicationControlManager {
             featureControl.metadataVersionOrThrow(),
             getTopicEffectiveMinIsr(topics.get(tp.topicId()).name),
             featureControl.isElrFeatureEnabled()
-        ).setIsSoftFenced(softFenceManager::isSoftFenced);
+        ).setSoftFencing(softFenceManager::isSoftFenced, softFenceManager);
         if (!reassignment.replicas().equals(currentReplicas)) {
             builder.setTargetReplicas(reassignment.replicas());
         }
@@ -2594,7 +2594,7 @@ public class ReplicationControlManager {
                                     getTopicEffectiveMinIsr(topicName),
                                     featureControl.isElrFeatureEnabled()
                             )
-                                    .setIsSoftFenced(softFenceManager::isSoftFenced)
+                                    .setSoftFencing(softFenceManager::isSoftFenced, softFenceManager)
                                     .setDirectory(brokerId, dirId)
                                     .setDefaultDirProvider(clusterDescriber)
                                     .build();

@@ -16,12 +16,15 @@
  */
 package org.apache.kafka.controller;
 
+import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.internals.LogContext;
+import org.apache.kafka.controller.metrics.QuorumControllerMetrics;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -32,13 +35,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class SoftFenceManagerTest {
     private static final SoftFencingConfig CONFIG = new SoftFencingConfig(true, 0, 1000L, -1L, 0L);
 
+    private final QuorumControllerMetrics metrics =
+        new QuorumControllerMetrics(Optional.empty(), new MockTime(), 0);
+
+    private SoftFenceManager newManager() {
+        return new SoftFenceManager(new LogContext(), metrics);
+    }
+
     private static long ms(long ms) {
         return TimeUnit.MILLISECONDS.toNanos(ms);
     }
 
     @Test
     public void testSoftFenceAndRemove() {
-        SoftFenceManager manager = new SoftFenceManager(new LogContext());
+        SoftFenceManager manager = newManager();
         assertFalse(manager.isSoftFenced(1));
         assertTrue(manager.softFence(1, ms(0), "test"));
         assertFalse(manager.softFence(1, ms(10), "test"));
@@ -46,17 +56,20 @@ public class SoftFenceManagerTest {
         assertTrue(manager.isSoftFenced(1));
         assertEquals(Set.of(1, 2), manager.softFencedBrokers());
         assertEquals(2, manager.softFencedBrokerCount());
+        assertEquals(2, metrics.softFencedBrokerCount());
 
         assertTrue(manager.remove(1, "test"));
         assertFalse(manager.remove(1, "test"));
         assertFalse(manager.isSoftFenced(1));
+        assertEquals(1, metrics.softFencedBrokerCount());
         manager.clear("test");
         assertEquals(Set.of(), manager.softFencedBrokers());
+        assertEquals(0, metrics.softFencedBrokerCount());
     }
 
     @Test
     public void testLiftAfterExitConditionIsStable() {
-        SoftFenceManager manager = new SoftFenceManager(new LogContext());
+        SoftFenceManager manager = newManager();
         manager.softFence(1, ms(0), "test");
         manager.softFence(2, ms(0), "test");
         Set<Integer> caughtUp = new HashSet<>();
@@ -67,11 +80,12 @@ public class SoftFenceManagerTest {
         assertEquals(List.of(), manager.maybeLift(CONFIG, ms(6999), caughtUp::contains));
         assertEquals(List.of(1), manager.maybeLift(CONFIG, ms(7000), caughtUp::contains));
         assertEquals(Set.of(2), manager.softFencedBrokers());
+        assertEquals(1, metrics.softFencedBrokerCount());
     }
 
     @Test
     public void testFallingBehindRestartsTheStableTimer() {
-        SoftFenceManager manager = new SoftFenceManager(new LogContext());
+        SoftFenceManager manager = newManager();
         manager.softFence(1, ms(0), "test");
         assertEquals(List.of(), manager.maybeLift(CONFIG, ms(100), b -> true));
         assertEquals(List.of(), manager.maybeLift(CONFIG, ms(900), b -> false));
@@ -82,7 +96,7 @@ public class SoftFenceManagerTest {
 
     @Test
     public void testLiftImmediatelyWithoutStableTime() {
-        SoftFenceManager manager = new SoftFenceManager(new LogContext());
+        SoftFenceManager manager = newManager();
         SoftFencingConfig config = new SoftFencingConfig(true, 0, 0L, -1L, 0L);
         manager.softFence(1, ms(0), "test");
         assertEquals(List.of(), manager.maybeLift(config, ms(1), b -> false));
@@ -91,7 +105,7 @@ public class SoftFenceManagerTest {
 
     @Test
     public void testLiftAfterMaxDuration() {
-        SoftFenceManager manager = new SoftFenceManager(new LogContext());
+        SoftFenceManager manager = newManager();
         SoftFencingConfig config = new SoftFencingConfig(true, 0, 1000L, -1L, 5000L);
         manager.softFence(1, ms(0), "test");
         manager.softFence(2, ms(3000), "test");

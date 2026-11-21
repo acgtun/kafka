@@ -26,6 +26,7 @@ import org.apache.kafka.common.message.ElectLeadersRequestData;
 import org.apache.kafka.common.message.ElectLeadersRequestData.TopicPartitions;
 import org.apache.kafka.common.message.ElectLeadersResponseData;
 import org.apache.kafka.common.metadata.ConfigRecord;
+import org.apache.kafka.controller.metrics.QuorumControllerMetrics;
 import org.apache.kafka.metadata.LeaderRecoveryState;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.TopicIdPartition;
@@ -145,15 +146,22 @@ public class SoftFencingReplicationControlTest {
 
         // When the leader of foo-0 goes away, broker 2 is elected ahead of broker 0, even though
         // broker 0 comes first in the replica list.
+        QuorumControllerMetrics metrics = ctx.clusterControl.metrics();
+        assertEquals(1, metrics.softFencedBrokerCount());
+        assertEquals(0, metrics.softFencedReplicasSkipped());
         ctx.fenceBrokers(1);
         assertEquals(OptionalInt.of(2), ctx.currentLeader(foo0));
         assertEquals(Set.of(0), replication.softFencedBrokers());
+        assertEquals(1, metrics.softFencedReplicasSkipped());
+        assertEquals(0, metrics.softFencedLeaderElections());
 
         // When broker 2 goes away too, broker 0 is the only choice and is elected.
         ctx.fenceBrokers(Set.of(1, 2));
         assertEquals(OptionalInt.of(0), ctx.currentLeader(foo0));
         assertEquals(OptionalInt.of(0), ctx.currentLeader(foo2));
         assertArrayEquals(new int[] {0}, replication.getPartition(fooId, 0).isr);
+        assertEquals(1, metrics.softFencedReplicasSkipped());
+        assertEquals(2, metrics.softFencedLeaderElections());
     }
 
     @Test
