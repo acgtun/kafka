@@ -86,6 +86,7 @@ public class PartitionChangeBuilder {
     private final Uuid topicId;
     private final int partitionId;
     private final IntPredicate isAcceptableLeader;
+    private IntPredicate isSoftFenced = replica -> false;
     private final MetadataVersion metadataVersion;
     private final int minISR;
     private final Map<Integer, Uuid> targetDirectories;
@@ -165,6 +166,14 @@ public class PartitionChangeBuilder {
         return this;
     }
 
+    /**
+     * Set the replicas that a clean election should pick only when no other replica is a valid leader.
+     */
+    public PartitionChangeBuilder setIsSoftFenced(IntPredicate isSoftFenced) {
+        this.isSoftFenced = isSoftFenced;
+        return this;
+    }
+
     public PartitionChangeBuilder setTargetRemoving(List<Integer> targetRemoving) {
         this.targetRemoving = targetRemoving;
         return this;
@@ -241,7 +250,7 @@ public class PartitionChangeBuilder {
      */
     private ElectionResult electPreferredLeader() {
         int preferredReplica = targetReplicas.get(0);
-        if (isValidNewLeader(preferredReplica)) {
+        if (isValidNewLeader(preferredReplica) && !isSoftFenced.test(preferredReplica)) {
             return new ElectionResult(preferredReplica, false);
         }
 
@@ -250,10 +259,7 @@ public class PartitionChangeBuilder {
             return new ElectionResult(partition.leader, false);
         }
 
-        Optional<Integer> onlineLeader = targetReplicas.stream()
-            .skip(1)
-            .filter(this::isValidNewLeader)
-            .findFirst();
+        Optional<Integer> onlineLeader = firstValidNewLeader();
         if (onlineLeader.isPresent()) {
             return new ElectionResult(onlineLeader.get(), false);
         }
@@ -274,9 +280,7 @@ public class PartitionChangeBuilder {
             return new ElectionResult(partition.leader, false);
         }
 
-        Optional<Integer> onlineLeader = targetReplicas.stream()
-            .filter(this::isValidNewLeader)
-            .findFirst();
+        Optional<Integer> onlineLeader = firstValidNewLeader();
         if (onlineLeader.isPresent()) {
             return new ElectionResult(onlineLeader.get(), false);
         }
@@ -334,6 +338,26 @@ public class PartitionChangeBuilder {
         // The valid new leader should be in either ISR or in ELR when ISR is empty.
         return (targetIsr.contains(replica) || (targetIsr.isEmpty() && targetElr.contains(replica))) &&
             isAcceptableLeader.test(replica);
+    }
+
+    /**
+     * Find the first valid new leader in replica order. A soft-fenced replica is returned only
+     * when no other replica is valid.
+     */
+    private Optional<Integer> firstValidNewLeader() {
+        Optional<Integer> softFencedLeader = Optional.empty();
+        for (int replica : targetReplicas) {
+            if (!isValidNewLeader(replica)) {
+                continue;
+            }
+            if (!isSoftFenced.test(replica)) {
+                return Optional.of(replica);
+            }
+            if (softFencedLeader.isEmpty()) {
+                softFencedLeader = Optional.of(replica);
+            }
+        }
+        return softFencedLeader;
     }
 
     private void tryElection(PartitionChangeRecord record) {
