@@ -176,6 +176,11 @@ import static org.apache.kafka.controller.QuorumController.ControllerOperationFl
  */
 public final class QuorumController implements Controller {
     /**
+     * How often the active controller checks whether soft-fenced brokers have caught up.
+     */
+    static final long SOFT_FENCE_CHECK_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
+
+    /**
      * A builder class which creates the QuorumController.
      */
     public static class Builder {
@@ -1160,6 +1165,7 @@ public final class QuorumController implements Controller {
             curClaimEpoch = epoch;
             offsetControl.activate(newNextWriteOffset);
             clusterControl.activate();
+            replicationControl.activate();
 
             // Prepend the activate event. It is important that this event go at the beginning
             // of the queue rather than the end (hence prepend rather than append). It's also
@@ -1213,6 +1219,7 @@ public final class QuorumController implements Controller {
                     newWrongControllerException(OptionalInt.empty()));
             offsetControl.deactivate();
             clusterControl.deactivate();
+            replicationControl.deactivate();
             periodicControl.deactivate();
         } catch (Throwable e) {
             fatalFaultHandler.handleFault("exception while renouncing leadership", e);
@@ -1643,6 +1650,7 @@ public final class QuorumController implements Controller {
             registerElectPreferred(leaderImbalanceCheckIntervalNs.getAsLong());
         }
         registerElectUnclean(TimeUnit.MILLISECONDS.toNanos(uncleanLeaderElectionCheckIntervalMs));
+        registerMaybeLiftSoftFences();
         registerExpireDelegationTokens(MILLISECONDS.toNanos(delegationTokenExpiryCheckIntervalMs));
         registerGeneratePeriodicPerformanceMessage();
         // OffsetControlManager must be initialized last, because its constructor will take the
@@ -1728,6 +1736,19 @@ public final class QuorumController implements Controller {
             replicationControl::maybeElectUncleanLeaders,
             checkIntervalNs,
             EnumSet.of(PeriodicTaskFlag.VERBOSE)));
+    }
+
+    /**
+     * Register the maybeLiftSoftFences task.
+     *
+     * This task periodically checks whether soft-fenced brokers have caught up, and lifts
+     * their soft fence if they have.
+     */
+    private void registerMaybeLiftSoftFences() {
+        periodicControl.registerTask(new PeriodicTask("maybeLiftSoftFences",
+            replicationControl::maybeLiftSoftFences,
+            SOFT_FENCE_CHECK_INTERVAL_NS,
+            EnumSet.noneOf(PeriodicTaskFlag.class)));
     }
 
     /**
