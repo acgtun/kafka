@@ -31,6 +31,7 @@ import org.apache.kafka.server.common.EligibleLeaderReplicasVersion;
 import org.apache.kafka.server.common.Feature;
 import org.apache.kafka.server.common.KRaftVersion;
 import org.apache.kafka.server.common.MetadataVersion;
+import org.apache.kafka.server.common.SoftFencingVersion;
 import org.apache.kafka.server.mutable.BoundedList;
 import org.apache.kafka.timeline.SnapshotRegistry;
 import org.apache.kafka.timeline.TimelineHashMap;
@@ -492,5 +493,10 @@ public class FeatureControlManager {
     boolean isElrFeatureEnabled() {
         return finalizedVersions.getOrDefault(EligibleLeaderReplicasVersion.FEATURE_NAME, (short) 0) >=
             EligibleLeaderReplicasVersion.ELRV_1.featureLevel();
+    }
+
+    boolean isIsrHoldSupported() {
+        return finalizedVersions.getOrDefault(SoftFencingVersion.FEATURE_NAME, (short) 0) >=
+            SoftFencingVersion.SFV_1.featureLevel();
     }
 }

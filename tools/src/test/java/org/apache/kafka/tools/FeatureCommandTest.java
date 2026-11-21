@@ -75,12 +75,16 @@ public class FeatureCommandTest {
                 outputWithoutEpoch(features.get(4))
         );
         assertFeatureOutput(
-                "streams.version", "0", "1", "0",
+                "soft.fencing.version", "0", "1", "0",
                 outputWithoutEpoch(features.get(5))
         );
         assertFeatureOutput(
-                "transaction.version", "0", "2", "0",
+                "streams.version", "0", "1", "0",
                 outputWithoutEpoch(features.get(6))
+        );
+        assertFeatureOutput(
+                "transaction.version", "0", "2", "0",
+                outputWithoutEpoch(features.get(7))
         );
     }
 
@@ -114,12 +118,16 @@ public class FeatureCommandTest {
                 outputWithoutEpoch(features.get(4))
         );
         assertFeatureOutput(
-                "streams.version", "0", "1", "0",
+                "soft.fencing.version", "0", "1", "0",
                 outputWithoutEpoch(features.get(5))
         );
         assertFeatureOutput(
-                "transaction.version", "0", "2", "0",
+                "streams.version", "0", "1", "0",
                 outputWithoutEpoch(features.get(6))
+        );
+        assertFeatureOutput(
+                "transaction.version", "0", "2", "0",
+                outputWithoutEpoch(features.get(7))
         );
     }
 
@@ -170,12 +178,16 @@ public class FeatureCommandTest {
                 outputWithoutEpoch(featuresWithUnstable.get(4))
         );
         assertFeatureOutput(
-                "streams.version", "0", "1", "0",
+                "soft.fencing.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithUnstable.get(5))
         );
         assertFeatureOutput(
-                "transaction.version", "0", "2", "0",
+                "streams.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithUnstable.get(6))
+        );
+        assertFeatureOutput(
+                "transaction.version", "0", "2", "0",
+                outputWithoutEpoch(featuresWithUnstable.get(7))
         );
 
         commandOutput = ToolsTestUtils.captureStandardOut(() ->
@@ -207,12 +219,16 @@ public class FeatureCommandTest {
                 outputWithoutEpoch(featuresWithoutUnstable.get(4))
         );
         assertFeatureOutput(
-                "streams.version", "0", "1", "0",
+                "soft.fencing.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithoutUnstable.get(5))
         );
         assertFeatureOutput(
-                "transaction.version", "0", "2", "0",
+                "streams.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithoutUnstable.get(6))
+        );
+        assertFeatureOutput(
+                "transaction.version", "0", "2", "0",
+                outputWithoutEpoch(featuresWithoutUnstable.get(7))
         );
     }
 
@@ -263,12 +279,16 @@ public class FeatureCommandTest {
                 outputWithoutEpoch(featuresWithUnstable.get(4))
         );
         assertFeatureOutput(
-                "streams.version", "0", "1", "0",
+                "soft.fencing.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithUnstable.get(5))
         );
         assertFeatureOutput(
-                "transaction.version", "0", "2", "0",
+                "streams.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithUnstable.get(6))
+        );
+        assertFeatureOutput(
+                "transaction.version", "0", "2", "0",
+                outputWithoutEpoch(featuresWithUnstable.get(7))
         );
 
         commandOutput = ToolsTestUtils.captureStandardOut(() ->
@@ -300,12 +320,16 @@ public class FeatureCommandTest {
                 outputWithoutEpoch(featuresWithoutUnstable.get(4))
         );
         assertFeatureOutput(
-                "streams.version", "0", "1", "0",
+                "soft.fencing.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithoutUnstable.get(5))
         );
         assertFeatureOutput(
-                "transaction.version", "0", "2", "0",
+                "streams.version", "0", "1", "0",
                 outputWithoutEpoch(featuresWithoutUnstable.get(6))
+        );
+        assertFeatureOutput(
+                "transaction.version", "0", "2", "0",
+                outputWithoutEpoch(featuresWithoutUnstable.get(7))
         );
     }
 
@@ -404,6 +428,7 @@ public class FeatureCommandTest {
                 "kraft.version was downgraded to 0.\n" +
                 "metadata.version was downgraded to 18.\n" +
                 "share.version was downgraded to 0.\n" +
+                "soft.fencing.version was downgraded to 0.\n" +
                 "streams.version was downgraded to 0.\n" +
                 "transaction.version was downgraded to 0.", commandOutput);
     }

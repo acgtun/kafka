@@ -31,6 +31,7 @@ import org.apache.kafka.server.common.Feature;
 import org.apache.kafka.server.common.KRaftVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 import org.apache.kafka.server.common.MetadataVersionTestUtils;
+import org.apache.kafka.server.common.SoftFencingVersion;
 import org.apache.kafka.server.common.TestFeatureVersion;
 import org.apache.kafka.server.common.TransactionVersion;
 import org.apache.kafka.timeline.SnapshotRegistry;
@@ -49,6 +50,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -162,6 +164,26 @@ public class FeatureControlManagerTest {
         assertEquals(
             new FinalizedControllerFeatures(versionMap("metadata.version", MetadataVersion.MINIMUM_VERSION.featureLevel(), "foo", 2), 123),
             manager.finalizedFeatures(123));
+    }
+
+    @Test
+    public void testIsIsrHoldSupported() {
+        LogContext logContext = new LogContext();
+        SnapshotRegistry snapshotRegistry = new SnapshotRegistry(logContext);
+        FeatureControlManager manager = new FeatureControlManager.Builder().
+                setLogContext(logContext).
+                setQuorumFeatures(features(SoftFencingVersion.FEATURE_NAME, 0, 1)).
+                setSnapshotRegistry(snapshotRegistry).
+                setMaxRecordsPerBatch(KRaftConfigs.CONTROLLER_MAX_RECORDS_PER_BATCH_DEFAULT).
+                build();
+        manager.replay(new FeatureLevelRecord().setName(MetadataVersion.FEATURE_NAME).setFeatureLevel(MetadataVersion.MINIMUM_VERSION.featureLevel()));
+        assertFalse(manager.isIsrHoldSupported());
+        manager.replay(new FeatureLevelRecord().setName(SoftFencingVersion.FEATURE_NAME).
+            setFeatureLevel(SoftFencingVersion.SFV_1.featureLevel()));
+        assertTrue(manager.isIsrHoldSupported());
+        manager.replay(new FeatureLevelRecord().setName(SoftFencingVersion.FEATURE_NAME).
+            setFeatureLevel(SoftFencingVersion.SFV_0.featureLevel()));
+        assertFalse(manager.isIsrHoldSupported());
     }
 
     @Test
