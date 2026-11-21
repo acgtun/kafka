@@ -390,6 +390,12 @@ public class ReplicationControlManager {
     private final TimelineHashMap<Uuid, TimelineHashSet<TopicIdPartition>> directoriesToPartitions;
 
     /**
+     * A map from broker IDs to the number of partitions for which the broker is an out-of-sync
+     * replica. Brokers with no such partitions have no entry.
+     */
+    private final TimelineHashMap<Integer, Integer> outOfSyncReplicaCounts;
+
+    /**
      * A ClusterDescriber which supplies cluster information to our ReplicaPlacer.
      */
     final KRaftClusterDescriber clusterDescriber = new KRaftClusterDescriber();
@@ -424,6 +430,7 @@ public class ReplicationControlManager {
         this.reassigningTopics = new TimelineHashMap<>(snapshotRegistry, 0);
         this.imbalancedPartitions = new TimelineHashSet<>(snapshotRegistry, 0);
         this.directoriesToPartitions = new TimelineHashMap<>(snapshotRegistry, 0);
+        this.outOfSyncReplicaCounts = new TimelineHashMap<>(snapshotRegistry, 0);
     }
 
     public void replay(TopicRecord record) {
@@ -586,6 +593,7 @@ public class ReplicationControlManager {
             }
 
             imbalancedPartitions.remove(new TopicIdPartition(record.topicId(), partitionId));
+            updateOutOfSyncReplicaCounts(partition, null);
         }
         brokersToIsrs.removeTopicEntryForBroker(topic.id, NO_LEADER);
 
@@ -2565,6 +2573,50 @@ public class ReplicationControlManager {
             newPartInfo.isr, prevPartInfo == null ? NO_LEADER : prevPartInfo.leader, newPartInfo.leader);
         brokersToElrs.update(topicId, partitionId, prevPartInfo == null ? null : prevPartInfo.elr,
             newPartInfo.elr);
+        updateOutOfSyncReplicaCounts(prevPartInfo, newPartInfo);
+    }
+
+    /**
+     * Check if a replica is out of sync: assigned to the partition but not in the ISR. Replicas
+     * that a reassignment is adding are not counted, because they are expected to be catching up.
+     * Replicas of a partition with no leader are not counted, because they cannot catch up.
+     */
+    static boolean isOutOfSyncReplica(PartitionRegistration partition, int replica) {
+        return partition.leader != NO_LEADER &&
+            !Replicas.contains(partition.isr, replica) &&
+            !Replicas.contains(partition.addingReplicas, replica);
+    }
+
+    private void updateOutOfSyncReplicaCounts(
+        PartitionRegistration prevPartInfo,
+        PartitionRegistration newPartInfo
+    ) {
+        if (prevPartInfo != null) {
+            for (int replica : prevPartInfo.replicas) {
+                if (isOutOfSyncReplica(prevPartInfo, replica)) {
+                    int count = outOfSyncReplicaCounts.getOrDefault(replica, 0);
+                    if (count <= 1) {
+                        outOfSyncReplicaCounts.remove(replica);
+                    } else {
+                        outOfSyncReplicaCounts.put(replica, count - 1);
+                    }
+                }
+            }
+        }
+        if (newPartInfo != null) {
+            for (int replica : newPartInfo.replicas) {
+                if (isOutOfSyncReplica(newPartInfo, replica)) {
+                    outOfSyncReplicaCounts.put(replica, outOfSyncReplicaCounts.getOrDefault(replica, 0) + 1);
+                }
+            }
+        }
+    }
+
+    /**
+     * Return the number of partitions for which the given broker is an out-of-sync replica.
+     */
+    int outOfSyncReplicaCount(int brokerId) {
+        return outOfSyncReplicaCounts.getOrDefault(brokerId, 0);
     }
 
     private void validatePartitionReplicationFactorUnchanged(PartitionRegistration part,
