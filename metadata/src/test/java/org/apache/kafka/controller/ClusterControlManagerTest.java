@@ -920,6 +920,57 @@ public class ClusterControlManagerTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
+    public void testReRegistrationAndIsrHold(boolean newIncarnationId) {
+        ClusterControlManager clusterControl = new ClusterControlManager.Builder().
+            setClusterId("pjvUwj3ZTEeSVQmUiH3IJw").
+            setFeatureControlManager(createFeatureControlManager()).
+            setBrokerShutdownHandler((brokerId, isCleanShutdown, records) -> { }).
+            build();
+        clusterControl.activate();
+        var finalizedFeatures = new FinalizedControllerFeatures(Map.of(MetadataVersion.FEATURE_NAME, MetadataVersion.MINIMUM_VERSION.featureLevel()),
+            100L);
+        BrokerRegistrationRequestData request = new BrokerRegistrationRequestData().
+            setBrokerId(1).
+            setClusterId(clusterControl.clusterId()).
+            setFeatures(new BrokerRegistrationRequestData.FeatureCollection(
+                Set.of(new BrokerRegistrationRequestData.Feature().
+                    setName(MetadataVersion.FEATURE_NAME).
+                    setMinSupportedVersion(MetadataVersion.MINIMUM_VERSION.featureLevel()).
+                    setMaxSupportedVersion(MetadataVersion.MINIMUM_VERSION.featureLevel())))).
+            setIncarnationId(Uuid.fromString("mISEfEFwQIuaD1gKCc5tzQ")).
+            setLogDirs(List.of(Uuid.fromString("Vv1gzkM2QpuE-PPrIc6XEw")));
+        RecordTestUtils.replayAll(clusterControl,
+            clusterControl.registerBroker(request, 100, finalizedFeatures, false).records());
+        clusterControl.replay(new BrokerRegistrationChangeRecord().
+            setBrokerId(1).
+            setBrokerEpoch(100).
+            setFenced(BrokerRegistrationFencingChange.UNFENCE.value()).
+            setIsrHold(BrokerRegistrationIsrHoldChange.HOLD.value()));
+        assertEquals(Set.of(1), clusterControl.brokersOnIsrHold());
+
+        if (newIncarnationId) {
+            request.setIncarnationId(Uuid.fromString("07OOcU7MQFeSmGAFPP2Zww"));
+        }
+        List<ApiMessageAndVersion> records =
+            clusterControl.registerBroker(request, 111, finalizedFeatures, false).records();
+        ApiMessageAndVersion registerRecord = records.get(records.size() - 1);
+        RecordTestUtils.replayAll(clusterControl, records);
+        if (newIncarnationId) {
+            // A new incarnation starts fenced and without the hold.
+            assertFalse(((RegisterBrokerRecord) registerRecord.message()).isrHold());
+            assertFalse(clusterControl.isUnfenced(1));
+            assertEquals(Set.of(), clusterControl.brokersOnIsrHold());
+        } else {
+            // Amending the registration keeps the hold, which needs version 5 of the record.
+            assertEquals((short) 5, registerRecord.version());
+            assertTrue(((RegisterBrokerRecord) registerRecord.message()).isrHold());
+            assertEquals(Set.of(1), clusterControl.brokersOnIsrHold());
+            assertTrue(clusterControl.isUnfenced(1));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
     public void testReRegistrationAndBrokerEpoch(boolean newIncarnationId) {
         ClusterControlManager clusterControl = new ClusterControlManager.Builder().
             setClusterId("pjvUwj3ZTEeSVQmUiH3IJw").
