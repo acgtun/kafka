@@ -37,6 +37,7 @@ import org.apache.kafka.server.common.EligibleLeaderReplicasVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 import org.apache.kafka.server.config.ConfigSynonym;
 import org.apache.kafka.server.config.ServerLogConfigs;
+import org.apache.kafka.server.config.SoftFencingConfigs;
 import org.apache.kafka.server.policy.AlterConfigPolicy;
 import org.apache.kafka.server.policy.AlterConfigPolicy.RequestMetadata;
 
@@ -753,6 +754,46 @@ public class ConfigurationControlManagerTest {
             false);
 
         assertEquals(ApiError.NONE, result.response());
+    }
+
+    @Test
+    public void testSoftFencingConfig() {
+        ConfigurationControlManager manager = new ConfigurationControlManager.Builder().
+            setKafkaConfigSchema(SCHEMA).
+            setMaxRecordsPerBatch(KRaftConfigs.CONTROLLER_MAX_RECORDS_PER_BATCH_DEFAULT).
+            setNodeId(0).
+            setStaticConfig(Map.of(
+                SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG, "5000",
+                SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, "100")).
+            build();
+        assertEquals(new SoftFencingConfig(false, 0, 5000L, -1L, 100L), manager.softFencingConfig());
+
+        // A dynamic cluster config overrides the static config.
+        manager.replay(new ConfigRecord().
+            setResourceType(BROKER.id()).setResourceName("").
+            setName(SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG).setValue("true"));
+        manager.replay(new ConfigRecord().
+            setResourceType(BROKER.id()).setResourceName("").
+            setName(SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG).setValue("7000"));
+        assertEquals(new SoftFencingConfig(true, 0, 7000L, -1L, 100L), manager.softFencingConfig());
+
+        // A dynamic config of this controller overrides the cluster config. Other nodes are ignored.
+        manager.replay(new ConfigRecord().
+            setResourceType(BROKER.id()).setResourceName("0").
+            setName(SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG).setValue("9000"));
+        manager.replay(new ConfigRecord().
+            setResourceType(BROKER.id()).setResourceName("1").
+            setName(SoftFencingConfigs.SOFT_FENCING_ENABLE_CONFIG).setValue("false"));
+        assertEquals(new SoftFencingConfig(true, 0, 9000L, -1L, 100L), manager.softFencingConfig());
+
+        // Removing the dynamic configs brings back the static config.
+        manager.replay(new ConfigRecord().
+            setResourceType(BROKER.id()).setResourceName("0").
+            setName(SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG).setValue(null));
+        manager.replay(new ConfigRecord().
+            setResourceType(BROKER.id()).setResourceName("").
+            setName(SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG).setValue(null));
+        assertEquals(new SoftFencingConfig(true, 0, 5000L, -1L, 100L), manager.softFencingConfig());
     }
 
     @Test

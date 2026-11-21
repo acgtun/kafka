@@ -86,7 +86,8 @@ public class DynamicBrokerConfig {
             GroupCoordinatorConfig.RECONFIGURABLE_CONFIGS,
             DynamicClusterMirrorConfig.RECONFIGURABLE_CONFIGS,
             DynamicQuotaConfig.RECONFIGURABLE_CONFIGS,
-            ShareCoordinatorConfig.RECONFIGURABLE_CONFIGS)
+            ShareCoordinatorConfig.RECONFIGURABLE_CONFIGS,
+            SoftFencingConfigs.RECONFIGURABLE_CONFIGS)
         .flatMap(Collection::stream)
         .collect(Collectors.toUnmodifiableSet());
 
