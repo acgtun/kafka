@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -67,6 +68,12 @@ public class QuorumControllerMetrics implements AutoCloseable {
         "KafkaController", "EventQueueOperationsTimedOutCount");
     private static final MetricName NEW_ACTIVE_CONTROLLERS_COUNT = getMetricName(
         "KafkaController", "NewActiveControllersCount");
+    private static final MetricName SOFT_FENCED_BROKER_COUNT = getMetricName(
+        "KafkaController", "SoftFencedBrokerCount");
+    private static final MetricName SOFT_FENCED_REPLICAS_SKIPPED_COUNT = getMetricName(
+        "KafkaController", "SoftFencedReplicasSkippedCount");
+    private static final MetricName SOFT_FENCED_LEADER_ELECTIONS_COUNT = getMetricName(
+        "KafkaController", "SoftFencedLeaderElectionsCount");
 
     private static final String TIME_SINCE_LAST_HEARTBEAT_RECEIVED_METRIC_NAME = "TimeSinceLastHeartbeatReceivedMs";
     private static final String BROKER_ID_TAG = "broker";
@@ -85,6 +92,9 @@ public class QuorumControllerMetrics implements AutoCloseable {
     private final AtomicLong operationsStarted = new AtomicLong(0);
     private final AtomicLong operationsTimedOut = new AtomicLong(0);
     private final AtomicLong newActiveControllers = new AtomicLong(0);
+    private final AtomicInteger softFencedBrokerCount = new AtomicInteger(0);
+    private final AtomicLong softFencedReplicasSkipped = new AtomicLong(0);
+    private final AtomicLong softFencedLeaderElections = new AtomicLong(0);
     private final Map<Integer, Long> brokerContactTimesMs = new ConcurrentHashMap<>();
     private final int sessionTimeoutMs;
 
@@ -161,6 +171,24 @@ public class QuorumControllerMetrics implements AutoCloseable {
             @Override
             public Long value() {
                 return newActiveControllers();
+            }
+        }));
+        registry.ifPresent(r -> r.newGauge(SOFT_FENCED_BROKER_COUNT, new Gauge<Integer>() {
+            @Override
+            public Integer value() {
+                return softFencedBrokerCount();
+            }
+        }));
+        registry.ifPresent(r -> r.newGauge(SOFT_FENCED_REPLICAS_SKIPPED_COUNT, new Gauge<Long>() {
+            @Override
+            public Long value() {
+                return softFencedReplicasSkipped();
+            }
+        }));
+        registry.ifPresent(r -> r.newGauge(SOFT_FENCED_LEADER_ELECTIONS_COUNT, new Gauge<Long>() {
+            @Override
+            public Long value() {
+                return softFencedLeaderElections();
             }
         }));
         registry.ifPresent(r -> r.newGauge(AVERAGE_IDLE_RATIO, new Gauge<Double>() {
@@ -286,6 +314,39 @@ public class QuorumControllerMetrics implements AutoCloseable {
         return newActiveControllers.get();
     }
 
+    /**
+     * Set the number of brokers that the active controller has soft-fenced.
+     */
+    public void setSoftFencedBrokerCount(int count) {
+        softFencedBrokerCount.set(count);
+    }
+
+    public int softFencedBrokerCount() {
+        return softFencedBrokerCount.get();
+    }
+
+    /**
+     * Count a leader election that passed over a soft-fenced replica for another replica.
+     */
+    public void incrementSoftFencedReplicasSkipped() {
+        softFencedReplicasSkipped.incrementAndGet();
+    }
+
+    public long softFencedReplicasSkipped() {
+        return softFencedReplicasSkipped.get();
+    }
+
+    /**
+     * Count a leader election that elected a soft-fenced replica because no other replica was valid.
+     */
+    public void incrementSoftFencedLeaderElections() {
+        softFencedLeaderElections.incrementAndGet();
+    }
+
+    public long softFencedLeaderElections() {
+        return softFencedLeaderElections.get();
+    }
+
     public void updateBrokerContactTime(int brokerId) {
         brokerContactTimesMs.put(brokerId, time.milliseconds());
     }
@@ -312,6 +373,9 @@ public class QuorumControllerMetrics implements AutoCloseable {
             EVENT_QUEUE_OPERATIONS_STARTED_COUNT,
             EVENT_QUEUE_OPERATIONS_TIMED_OUT_COUNT,
             NEW_ACTIVE_CONTROLLERS_COUNT,
+            SOFT_FENCED_BROKER_COUNT,
+            SOFT_FENCED_REPLICAS_SKIPPED_COUNT,
+            SOFT_FENCED_LEADER_ELECTIONS_COUNT,
             AVERAGE_IDLE_RATIO
         ).forEach(r::removeMetric));
         removeTimeSinceLastHeartbeatMetrics();

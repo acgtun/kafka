@@ -308,6 +308,10 @@ public class ClusterControlManager {
         return time;
     }
 
+    QuorumControllerMetrics metrics() {
+        return metrics;
+    }
+
     ReplicaPlacer replicaPlacer() {
         return replicaPlacer;
     }
