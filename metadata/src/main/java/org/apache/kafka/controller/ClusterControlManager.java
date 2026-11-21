@@ -467,10 +467,15 @@ public class ClusterControlManager {
                     request.brokerId(), request.incarnationId(), existing.epoch());
             record.setFenced(existing.fenced());
             record.setInControlledShutdown(existing.inControlledShutdown());
+            record.setIsrHold(existing.isrHold());
             record.setBrokerEpoch(existing.epoch());
         }
-        records.add(new ApiMessageAndVersion(record, featureControl.metadataVersionOrThrow().
-            registerBrokerRecordVersion()));
+        short recordVersion = featureControl.metadataVersionOrThrow().registerBrokerRecordVersion();
+        if (record.isrHold()) {
+            // Only version 5 and above can carry the ISR hold of an amended registration.
+            recordVersion = (short) Math.max(recordVersion, 5);
+        }
+        records.add(new ApiMessageAndVersion(record, recordVersion));
 
         if (!request.incarnationId().equals(prevIncarnationId)) {
             // Remove any existing session for the old broker incarnation.
@@ -602,6 +607,7 @@ public class ClusterControlManager {
                 setIsMigratingZkBroker(record.isMigratingZkBroker()).
                 setDirectories(record.logDirs()).
                 setCordonedDirectories(record.cordonedLogDirs()).
+                setIsrHold(record.isrHold()).
                     build());
         updateDirectories(brokerId, prevRegistration == null ? null : prevRegistration.directories(), record.logDirs());
         if (heartbeatManager != null) {
@@ -766,6 +772,19 @@ public class ClusterControlManager {
      * Returns true if the broker is unfenced; Returns false if it is
      * not or if it does not exist.
      */
+    /**
+     * Returns the brokers that are on ISR hold.
+     */
+    Set<Integer> brokersOnIsrHold() {
+        Set<Integer> brokerIds = new HashSet<>();
+        for (BrokerRegistration registration : brokerRegistrations.values()) {
+            if (registration.isrHold()) {
+                brokerIds.add(registration.id());
+            }
+        }
+        return brokerIds;
+    }
+
     public boolean isUnfenced(int brokerId) {
         BrokerRegistration registration = brokerRegistrations.get(brokerId);
         if (registration == null) return false;
