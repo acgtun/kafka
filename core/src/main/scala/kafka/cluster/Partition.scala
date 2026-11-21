@@ -919,6 +919,7 @@ class Partition(val topicPartition: TopicPartition,
     // 2. It is not in controlled shutdown.
     // 3. Its metadata cached broker epoch matches its Fetch request broker epoch. Or the Fetch
     //    request broker epoch is -1 which bypasses the epoch verification.
+    // 4. It is not on ISR hold, unless the ISR is below the minimum size.
     val mayBeReplica = getReplica(followerReplicaId)
     // The topic is already deleted and we don't have any replica information. In this case, we can return false
     // so as to avoid NPE
@@ -930,7 +931,16 @@ class Partition(val topicPartition: TopicPartition,
     val cachedBrokerEpoch = metadataCache.getAliveBrokerEpoch(followerReplicaId)
     !metadataCache.isBrokerFenced(followerReplicaId) &&
       !metadataCache.isBrokerShuttingDown(followerReplicaId) &&
-      isBrokerEpochIsrEligible(storedBrokerEpoch, cachedBrokerEpoch)
+      isBrokerEpochIsrEligible(storedBrokerEpoch, cachedBrokerEpoch) &&
+      !isHeldOutOfIsr(followerReplicaId)
+  }
+
+  // A broker on ISR hold is still catching up after a restart. It is kept out of the ISR so that
+  // the high watermark does not wait for it, but it may join when the partition would otherwise
+  // be below min.insync.replicas.
+  private def isHeldOutOfIsr(followerReplicaId: Int): Boolean = {
+    metadataCache.isBrokerOnIsrHold(followerReplicaId) &&
+      !leaderLogIfLocal.exists(partitionState.isr.size < effectiveMinIsr(_))
   }
 
   private def isBrokerEpochIsrEligible(storedBrokerEpoch: Optional[java.lang.Long], cachedBrokerEpoch: Optional[java.lang.Long]): Boolean = {
