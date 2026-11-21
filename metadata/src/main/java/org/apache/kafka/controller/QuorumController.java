@@ -1746,7 +1746,10 @@ public final class QuorumController implements Controller {
      */
     private void registerMaybeLiftSoftFences() {
         periodicControl.registerTask(new PeriodicTask("maybeLiftSoftFences",
-            replicationControl::maybeLiftSoftFences,
+            () -> {
+                replicationControl.sampleCommittedMetadataOffset(offsetControl.lastCommittedOffset());
+                return replicationControl.maybeLiftSoftFences();
+            },
             SOFT_FENCE_CHECK_INTERVAL_NS,
             EnumSet.noneOf(PeriodicTaskFlag.class)));
     }
@@ -2029,6 +2032,7 @@ public final class QuorumController implements Controller {
                         throw new StaleBrokerEpochException(
                             String.format("Receive a heartbeat from broker %d before registration", brokerId));
                     }
+                    replicationControl.sampleCommittedMetadataOffset(offsetControl.lastCommittedOffset());
                     ControllerResult<BrokerHeartbeatReply> result = replicationControl.
                         processBrokerHeartbeat(request, offsetForRegisterBrokerRecord.getAsLong());
                     inControlledShutdown = result.response().inControlledShutdown();
