@@ -54,6 +54,9 @@ public class QuorumControllerMetricsTest {
                     "kafka.controller:type=KafkaController,name=LastAppliedRecordTimestamp",
                     "kafka.controller:type=KafkaController,name=LastCommittedRecordOffset",
                     "kafka.controller:type=KafkaController,name=NewActiveControllersCount",
+                    "kafka.controller:type=KafkaController,name=SoftFencedBrokerCount",
+                    "kafka.controller:type=KafkaController,name=SoftFencedLeaderElectionsCount",
+                    "kafka.controller:type=KafkaController,name=SoftFencedReplicasSkippedCount",
                     "kafka.controller:type=KafkaController,name=TimedOutBrokerHeartbeatCount",
                     "kafka.controller:type=KafkaController,name=TimeSinceLastHeartbeatReceivedMs,broker=1"
                 );
@@ -61,6 +64,39 @@ public class QuorumControllerMetricsTest {
             }
             ControllerMetricsTestUtils.assertMetricsForTypeEqual(registry, "kafka.controller",
                     Set.of());
+        } finally {
+            registry.shutdown();
+        }
+    }
+
+    @Test
+    public void testSoftFencingMetrics() {
+        MetricsRegistry registry = new MetricsRegistry();
+        MockTime time = new MockTime();
+        try (QuorumControllerMetrics metrics = new QuorumControllerMetrics(Optional.of(registry), time, 9000)) {
+            metrics.setSoftFencedBrokerCount(2);
+            metrics.incrementSoftFencedReplicasSkipped();
+            metrics.incrementSoftFencedReplicasSkipped();
+            metrics.incrementSoftFencedReplicasSkipped();
+            metrics.incrementSoftFencedLeaderElections();
+
+            @SuppressWarnings("unchecked")
+            Gauge<Integer> softFencedBrokerCount = (Gauge<Integer>) registry
+                .allMetrics()
+                .get(metricName("KafkaController", "SoftFencedBrokerCount"));
+            assertEquals(2, softFencedBrokerCount.value());
+
+            @SuppressWarnings("unchecked")
+            Gauge<Long> replicasSkipped = (Gauge<Long>) registry
+                .allMetrics()
+                .get(metricName("KafkaController", "SoftFencedReplicasSkippedCount"));
+            assertEquals(3L, replicasSkipped.value());
+
+            @SuppressWarnings("unchecked")
+            Gauge<Long> leaderElections = (Gauge<Long>) registry
+                .allMetrics()
+                .get(metricName("KafkaController", "SoftFencedLeaderElectionsCount"));
+            assertEquals(1L, leaderElections.value());
         } finally {
             registry.shutdown();
         }

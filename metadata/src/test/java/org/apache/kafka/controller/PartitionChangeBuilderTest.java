@@ -372,6 +372,55 @@ public class PartitionChangeBuilderTest {
         assertElectLeaderEquals(builder, 1, false);
     }
 
+    private static final class CountingListener implements PartitionChangeBuilder.SoftFencedElectionListener {
+        private int skipped = 0;
+        private int elected = 0;
+
+        @Override
+        public void softFencedReplicaSkipped() {
+            skipped++;
+        }
+
+        @Override
+        public void softFencedLeaderElected() {
+            elected++;
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("partitionChangeRecordVersions")
+    public void testSoftFencedElectionListener(short version) {
+        // Broker 2 is passed over for broker 3.
+        CountingListener listener = new CountingListener();
+        createSoftFencedBuilder(version, List.of(2, 3, 4), r -> false).
+            setSoftFencing(r -> r == 2, listener).build();
+        assertEquals(1, listener.skipped);
+        assertEquals(0, listener.elected);
+
+        // Broker 2 is elected, and the soft-fenced broker 4 after it would not have been anyway.
+        listener = new CountingListener();
+        createSoftFencedBuilder(version, List.of(2, 3, 4), r -> false).
+            setSoftFencing(r -> r == 4, listener).build();
+        assertEquals(0, listener.skipped);
+        assertEquals(0, listener.elected);
+
+        // Broker 2 is elected because every valid replica is soft-fenced.
+        listener = new CountingListener();
+        createSoftFencedBuilder(version, List.of(2, 3), r -> false).
+            setSoftFencing(r -> r == 2 || r == 3, listener).build();
+        assertEquals(0, listener.skipped);
+        assertEquals(1, listener.elected);
+
+        // Nothing is reported when the leader does not change, or for an unclean election.
+        listener = new CountingListener();
+        createFooBuilder(version).setElection(Election.PREFERRED).
+            setSoftFencing(r -> r == 2, listener).build();
+        createSoftFencedBuilder(version, List.of(), r -> false).setElection(Election.UNCLEAN).
+            setSoftFencing(r -> r == 2, listener).build();
+        assertEquals(0, listener.skipped);
+        assertEquals(0, listener.elected);
+    }
+
     /**
      * Create a builder for a partition with replicas [2, 3, 4, 1] whose leader, broker 1, is not acceptable.
      */

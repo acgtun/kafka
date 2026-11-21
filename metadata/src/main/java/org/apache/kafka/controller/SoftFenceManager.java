@@ -17,6 +17,7 @@
 package org.apache.kafka.controller;
 
 import org.apache.kafka.common.utils.internals.LogContext;
+import org.apache.kafka.controller.metrics.QuorumControllerMetrics;
 
 import org.slf4j.Logger;
 
@@ -38,7 +39,7 @@ import java.util.function.IntPredicate;
  *
  * This class is not thread-safe. It is only used from the controller event thread.
  */
-class SoftFenceManager {
+class SoftFenceManager implements PartitionChangeBuilder.SoftFencedElectionListener {
     private static final long NOT_SET = -1L;
 
     private static final class SoftFencedBroker {
@@ -51,10 +52,22 @@ class SoftFenceManager {
     }
 
     private final Logger log;
+    private final QuorumControllerMetrics metrics;
     private final Map<Integer, SoftFencedBroker> softFencedBrokers = new HashMap<>();
 
-    SoftFenceManager(LogContext logContext) {
+    SoftFenceManager(LogContext logContext, QuorumControllerMetrics metrics) {
         this.log = logContext.logger(SoftFenceManager.class);
+        this.metrics = metrics;
+    }
+
+    @Override
+    public void softFencedReplicaSkipped() {
+        metrics.incrementSoftFencedReplicasSkipped();
+    }
+
+    @Override
+    public void softFencedLeaderElected() {
+        metrics.incrementSoftFencedLeaderElections();
     }
 
     boolean isSoftFenced(int brokerId) {
@@ -83,6 +96,7 @@ class SoftFenceManager {
             return false;
         }
         log.info("Soft-fencing broker {}: {}.", brokerId, reason);
+        metrics.setSoftFencedBrokerCount(softFencedBrokers.size());
         return true;
     }
 
@@ -99,6 +113,7 @@ class SoftFenceManager {
             return false;
         }
         log.info("Lifting the soft fence of broker {}: {}.", brokerId, reason);
+        metrics.setSoftFencedBrokerCount(softFencedBrokers.size());
         return true;
     }
 
@@ -111,6 +126,7 @@ class SoftFenceManager {
         if (!softFencedBrokers.isEmpty()) {
             log.info("Lifting the soft fence of brokers {}: {}.", softFencedBrokers.keySet(), reason);
             softFencedBrokers.clear();
+            metrics.setSoftFencedBrokerCount(0);
         }
     }
 
@@ -153,6 +169,7 @@ class SoftFenceManager {
                 log.info("Lifting the soft fence of broker {}: {}.", brokerId, reason);
             }
         }
+        metrics.setSoftFencedBrokerCount(softFencedBrokers.size());
         return lifted;
     }
 }
