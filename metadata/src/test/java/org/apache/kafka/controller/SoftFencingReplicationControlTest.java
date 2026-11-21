@@ -41,6 +41,7 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static org.apache.kafka.common.protocol.Errors.NONE;
 import static org.apache.kafka.common.protocol.Errors.PREFERRED_LEADER_NOT_AVAILABLE;
 import static org.apache.kafka.controller.ReplicationControlTestContext.defaultBrokerEpoch;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -162,6 +163,41 @@ public class SoftFencingReplicationControlTest {
         assertArrayEquals(new int[] {0}, replication.getPartition(fooId, 0).isr);
         assertEquals(1, metrics.softFencedReplicasSkipped());
         assertEquals(2, metrics.softFencedLeaderElections());
+    }
+
+    @Test
+    public void testSoftFencedBrokerIsNotFirstLeaderOfNewPartition() {
+        ReplicationControlTestContext ctx = softFencingContext();
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2);
+        ctx.unfenceBrokers(0, 1, 2);
+        ctx.createTestTopic("foo", new int[][] {new int[] {0, 1, 2}});
+        ctx.fenceBrokers(0);
+        ctx.unfenceBrokers(0);
+        assertEquals(Set.of(0), replication.softFencedBrokers());
+        QuorumControllerMetrics metrics = ctx.clusterControl.metrics();
+
+        // In a new topic, broker 0 keeps its place in the replica list and is in the ISR, but
+        // the next replica leads.
+        Uuid barId = ctx.createTestTopic("bar", new int[][] {
+            new int[] {0, 1, 2}, new int[] {1, 0, 2}}).topicId();
+        assertArrayEquals(new int[] {0, 1, 2}, replication.getPartition(barId, 0).replicas);
+        assertArrayEquals(new int[] {0, 1, 2}, replication.getPartition(barId, 0).isr);
+        assertEquals(OptionalInt.of(1), ctx.currentLeader(new TopicIdPartition(barId, 0)));
+        assertEquals(OptionalInt.of(1), ctx.currentLeader(new TopicIdPartition(barId, 1)));
+        assertEquals(1, metrics.softFencedReplicasSkipped());
+
+        // The same holds for a partition added to an existing topic.
+        ctx.createPartitions(3, "bar", new int[][] {new int[] {0, 2, 1}}, NONE.code());
+        assertEquals(OptionalInt.of(2), ctx.currentLeader(new TopicIdPartition(barId, 2)));
+        assertEquals(2, metrics.softFencedReplicasSkipped());
+        assertEquals(0, metrics.softFencedLeaderElections());
+
+        // Broker 0 leads a new partition that has no other replica.
+        Uuid bazId = ctx.createTestTopic("baz", new int[][] {new int[] {0}}).topicId();
+        assertEquals(OptionalInt.of(0), ctx.currentLeader(new TopicIdPartition(bazId, 0)));
+        assertEquals(2, metrics.softFencedReplicasSkipped());
+        assertEquals(1, metrics.softFencedLeaderElections());
     }
 
     @Test
