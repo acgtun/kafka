@@ -38,6 +38,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -295,6 +296,106 @@ public class PartitionChangeBuilderTest {
         assertElectLeaderEquals(createBazBuilder(version).setElection(Election.PREFERRED), 3, false);
         assertElectLeaderEquals(createBazBuilder(version), 3, false);
         assertElectLeaderEquals(createBazBuilder(version).setElection(Election.UNCLEAN), 3, false);
+    }
+
+    @ParameterizedTest
+    @MethodSource("partitionChangeRecordVersions")
+    public void testElectLeaderSkipsSoftFencedReplicas(short version) {
+        // FOO has replicas [2, 1, 3], the ISR [2, 1, 3] and the leader 1. Broker 3 is not acceptable.
+        // A soft-fenced preferred replica does not take leadership from a valid leader.
+        assertElectLeaderEquals(createFooBuilder(version).setElection(Election.PREFERRED).
+            setIsSoftFenced(r -> r == 2), 1, false);
+        PartitionChangeBuilder preferredBuilder = createFooBuilder(version).setElection(Election.PREFERRED).
+            setIsSoftFenced(r -> r == 2);
+        assertEquals(Optional.empty(), preferredBuilder.build());
+
+        // A valid leader stays the leader when it is soft-fenced.
+        assertElectLeaderEquals(createFooBuilder(version).setIsSoftFenced(r -> r == 1), 1, false);
+        assertElectLeaderEquals(createFooBuilder(version).setElection(Election.PREFERRED).
+            setIsSoftFenced(r -> r == 1), 2, false);
+        assertElectLeaderEquals(createFooBuilder(version).setElection(Election.PREFERRED).
+            setIsSoftFenced(r -> true), 1, false);
+
+        // When the leader leaves the ISR, the replicas that are not soft-fenced are tried first.
+        for (Election election : Election.values()) {
+            assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(2, 3, 4), r -> r == 2).
+                setElection(election), 3, false);
+            assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(2, 3, 4), r -> r == 2 || r == 3).
+                setElection(election), 4, false);
+            assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(2, 3, 4), r -> r == 3).
+                setElection(election), 2, false);
+            // A soft-fenced replica is elected when it is the only valid choice.
+            assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(2, 3, 4), r -> true).
+                setElection(election), 2, false);
+            assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(3), r -> r == 3).
+                setElection(election), 3, false);
+            assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(3, 4), r -> r == 3 || r == 4).
+                setElection(election), 3, false);
+        }
+
+        // An unclean election does not look at soft fencing.
+        assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(), r -> r == 2).
+            setElection(Election.UNCLEAN), 2, true);
+        assertElectLeaderEquals(createSoftFencedBuilder(version, List.of(), r -> r == 2), NO_LEADER, false);
+    }
+
+    @Test
+    public void testElectLeaderFromElrSkipsSoftFencedReplicas() {
+        short version = 2;
+        PartitionRegistration partition = new PartitionRegistration.Builder().
+            setReplicas(new int[] {1, 2, 3}).
+            setDirectories(DirectoryId.migratingArray(3)).
+            setIsr(new int[] {}).
+            setElr(new int[] {1, 2}).
+            setLeader(NO_LEADER).
+            setLeaderRecoveryState(LeaderRecoveryState.RECOVERED).
+            setLeaderEpoch(100).
+            setPartitionEpoch(200).
+            build();
+        PartitionChangeBuilder builder = new PartitionChangeBuilder(partition, FOO_ID, 0, r -> true,
+            metadataVersionForPartitionChangeRecordVersion(version), 2, true).
+            setDefaultDirProvider(DEFAULT_DIR_PROVIDER).
+            setIsSoftFenced(r -> r == 1);
+        assertElectLeaderEquals(builder, 2, false);
+        ApiMessageAndVersion expected = new ApiMessageAndVersion(new PartitionChangeRecord().
+            setTopicId(FOO_ID).
+            setPartitionId(0).
+            setIsr(List.of(2)).
+            setLeader(2).
+            setEligibleLeaderReplicas(List.of(1)), version);
+        assertEquals(Optional.of(expected), builder.build());
+
+        builder = new PartitionChangeBuilder(partition, FOO_ID, 0, r -> true,
+            metadataVersionForPartitionChangeRecordVersion(version), 2, true).
+            setDefaultDirProvider(DEFAULT_DIR_PROVIDER).
+            setIsSoftFenced(r -> r == 1 || r == 2);
+        assertElectLeaderEquals(builder, 1, false);
+    }
+
+    /**
+     * Create a builder for a partition with replicas [2, 3, 4, 1] whose leader, broker 1, is not acceptable.
+     */
+    private static PartitionChangeBuilder createSoftFencedBuilder(
+        short version,
+        List<Integer> otherIsrMembers,
+        IntPredicate isSoftFenced
+    ) {
+        List<Integer> isr = new ArrayList<>(otherIsrMembers);
+        isr.add(1);
+        PartitionRegistration partition = new PartitionRegistration.Builder().
+            setReplicas(new int[] {2, 3, 4, 1}).
+            setDirectories(DirectoryId.migratingArray(4)).
+            setIsr(Replicas.toArray(isr)).
+            setLeader(1).
+            setLeaderRecoveryState(LeaderRecoveryState.RECOVERED).
+            setLeaderEpoch(100).
+            setPartitionEpoch(200).
+            build();
+        return new PartitionChangeBuilder(partition, FOO_ID, 0, r -> r != 1,
+            metadataVersionForPartitionChangeRecordVersion(version), 2, isElrEnabled(version)).
+            setDefaultDirProvider(DEFAULT_DIR_PROVIDER).
+            setTargetIsr(otherIsrMembers).
+            setIsSoftFenced(isSoftFenced);
     }
 
     private static void testTriggerLeaderEpochBumpIfNeeded(
