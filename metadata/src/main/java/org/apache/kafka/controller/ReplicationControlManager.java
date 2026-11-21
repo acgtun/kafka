@@ -919,8 +919,7 @@ public class ReplicationControlManager {
                 PartitionAssignment partitionAssignment = new PartitionAssignment(assignment.brokerIds(), clusterDescriber);
                 validateManualPartitionAssignment(partitionAssignment, replicationFactor);
                 replicationFactor = OptionalInt.of(assignment.brokerIds().size());
-                List<Integer> isr = assignment.brokerIds().stream().
-                    filter(clusterControl::isActive).toList();
+                List<Integer> isr = initialIsr(assignment.brokerIds());
                 if (isr.isEmpty()) {
                     return new ApiError(Errors.INVALID_REPLICA_ASSIGNMENT,
                         "All brokers specified in the manual partition assignment for " +
@@ -963,8 +962,7 @@ public class ReplicationControlManager {
                 ), clusterDescriber);
                 for (int partitionId = 0; partitionId < topicAssignment.assignments().size(); partitionId++) {
                     PartitionAssignment partitionAssignment = topicAssignment.assignments().get(partitionId);
-                    List<Integer> isr = partitionAssignment.replicas().stream().
-                        filter(clusterControl::isActive).toList();
+                    List<Integer> isr = initialIsr(partitionAssignment.replicas());
                     // If the ISR is empty, it means that all brokers are fenced or
                     // in controlled shutdown. To be consistent with the replica placer,
                     // we reject the create topic request with INVALID_REPLICATION_FACTOR.
@@ -1051,6 +1049,17 @@ public class ReplicationControlManager {
             setLeaderEpoch(0).
             setPartitionEpoch(0).
             build();
+    }
+
+    /**
+     * The initial ISR of a new partition: its active replicas, without the brokers on ISR hold
+     * unless every active replica is on hold. If that leaves the ISR below the minimum size, the
+     * leader adds a broker on hold by the usual rule as soon as it has fetched.
+     */
+    private List<Integer> initialIsr(List<Integer> replicas) {
+        List<Integer> active = replicas.stream().filter(clusterControl::isActive).toList();
+        List<Integer> notOnHold = active.stream().filter(id -> !clusterControl.isOnIsrHold(id)).toList();
+        return notOnHold.isEmpty() ? active : notOnHold;
     }
 
     /**
@@ -2296,8 +2305,7 @@ public class ReplicationControlManager {
         int partitionId = startPartitionId;
         for (int i = 0; i < partitionAssignments.size(); i++) {
             PartitionAssignment partitionAssignment = partitionAssignments.get(i);
-            List<Integer> isr = isrs.get(i).stream().
-                filter(clusterControl::isActive).toList();
+            List<Integer> isr = initialIsr(isrs.get(i));
             // If the ISR is empty, it means that all brokers are fenced or
             // in controlled shutdown. To be consistent with the replica placer,
             // we reject the create topic request with INVALID_REPLICATION_FACTOR.
