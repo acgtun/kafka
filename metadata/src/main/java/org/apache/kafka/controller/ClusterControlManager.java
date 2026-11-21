@@ -785,6 +785,14 @@ public class ClusterControlManager {
         return brokerIds;
     }
 
+    /**
+     * Returns true if the broker is registered and on ISR hold.
+     */
+    boolean isOnIsrHold(int brokerId) {
+        BrokerRegistration registration = brokerRegistrations.get(brokerId);
+        return registration != null && registration.isrHold();
+    }
+
     public boolean isUnfenced(int brokerId) {
         BrokerRegistration registration = brokerRegistrations.get(brokerId);
         if (registration == null) return false;

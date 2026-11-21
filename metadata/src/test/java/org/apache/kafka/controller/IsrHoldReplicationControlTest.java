@@ -36,7 +36,9 @@ import java.util.List;
 import java.util.OptionalInt;
 import java.util.Set;
 
+import static org.apache.kafka.common.protocol.Errors.NONE;
 import static org.apache.kafka.controller.ReplicationControlTestContext.defaultBrokerEpoch;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -103,6 +105,43 @@ public class IsrHoldReplicationControlTest {
         ctx.fenceBrokers(0);
         assertFalse(isrHold(ctx, 0));
         assertEquals(Set.of(), ctx.clusterControl.brokersOnIsrHold());
+    }
+
+    @Test
+    public void testBrokerOnIsrHoldIsLeftOutOfTheIsrOfNewPartition() {
+        ReplicationControlTestContext ctx = isrHoldContext(true, 1, 1);
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2);
+        ctx.unfenceBrokers(0, 1, 2);
+        ctx.createTestTopic("foo", new int[][] {new int[] {0, 1, 2}});
+        ctx.fenceBrokers(0);
+        unfence(ctx, 0);
+        assertTrue(isrHold(ctx, 0));
+
+        // A new topic: broker 0 is a replica, but the partition starts without it in the ISR.
+        Uuid barId = ctx.createTestTopic("bar", new int[][] {
+            new int[] {0, 1, 2}, new int[] {1, 2, 0}}).topicId();
+        assertArrayEquals(new int[] {0, 1, 2}, replication.getPartition(barId, 0).replicas);
+        assertArrayEquals(new int[] {1, 2}, replication.getPartition(barId, 0).isr);
+        assertEquals(1, replication.getPartition(barId, 0).leader);
+        assertArrayEquals(new int[] {1, 2}, replication.getPartition(barId, 1).isr);
+
+        // The same holds for a partition added to an existing topic.
+        ctx.createPartitions(3, "bar", new int[][] {new int[] {2, 0, 1}}, NONE.code());
+        assertArrayEquals(new int[] {2, 1}, replication.getPartition(barId, 2).isr);
+
+        // A partition whose only active replica is on hold starts with it in the ISR.
+        Uuid bazId = ctx.createTestTopic("baz", new int[][] {new int[] {0}}).topicId();
+        assertArrayEquals(new int[] {0}, replication.getPartition(bazId, 0).isr);
+        assertEquals(0, replication.getPartition(bazId, 0).leader);
+
+        // Once the hold is released, new partitions start with the broker in the ISR.
+        ctx.replay(List.of(new ApiMessageAndVersion(new BrokerRegistrationChangeRecord().
+            setBrokerId(0).setBrokerEpoch(defaultBrokerEpoch(0)).
+            setIsrHold(BrokerRegistrationIsrHoldChange.RELEASE.value()), (short) 4)));
+        assertFalse(isrHold(ctx, 0));
+        Uuid quuxId = ctx.createTestTopic("quux", new int[][] {new int[] {1, 0, 2}}).topicId();
+        assertArrayEquals(new int[] {1, 0, 2}, replication.getPartition(quuxId, 0).isr);
     }
 
     private static void assertNotPutOnIsrHold(ReplicationControlTestContext ctx) {
