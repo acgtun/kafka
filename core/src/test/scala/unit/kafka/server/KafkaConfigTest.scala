@@ -1227,6 +1227,8 @@ class KafkaConfigTest {
         case SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "-1")
         case SoftFencingConfigs.SOFT_FENCING_MAX_METADATA_LAG_MS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "-2")
         case SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "-1")
+        case SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_boolean", "0")
+        case SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_MAX_BROKERS_CONFIG => assertPropertyInvalid(baseProperties, name, "not_a_number", "0")
 
         case _ => assertPropertyInvalid(baseProperties, name, "not_a_number", "-1")
       }
