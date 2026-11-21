@@ -56,6 +56,7 @@ public class BrokerRegistration {
         private boolean isMigratingZkBroker;
         private List<Uuid> directories;
         private List<Uuid> cordonedDirectories;
+        private boolean isrHold;
 
         public Builder() {
             this.id = 0;
@@ -70,6 +71,7 @@ public class BrokerRegistration {
             this.directories = List.of();
             // This defaults to null indicating the broker has not yet sent its cordoned log dirs.
             this.cordonedDirectories = null;
+            this.isrHold = false;
         }
 
         public Builder setId(int id) {
@@ -137,6 +139,11 @@ public class BrokerRegistration {
             return this;
         }
 
+        public Builder setIsrHold(boolean isrHold) {
+            this.isrHold = isrHold;
+            return this;
+        }
+
         public BrokerRegistration build() {
             return new BrokerRegistration(
                 id,
@@ -149,7 +156,8 @@ public class BrokerRegistration {
                 inControlledShutdown,
                 isMigratingZkBroker,
                 directories,
-                cordonedDirectories);
+                cordonedDirectories,
+                isrHold);
         }
     }
 
@@ -164,6 +172,7 @@ public class BrokerRegistration {
     private final boolean isMigratingZkBroker;
     private final List<Uuid> directories;
     private final List<Uuid> cordonedDirectories;
+    private final boolean isrHold;
 
     private BrokerRegistration(
         int id,
@@ -176,7 +185,8 @@ public class BrokerRegistration {
         boolean inControlledShutdown,
         boolean isMigratingZkBroker,
         List<Uuid> directories,
-        List<Uuid> cordonedDirectories
+        List<Uuid> cordonedDirectories,
+        boolean isrHold
     ) {
         this.id = id;
         this.epoch = epoch;
@@ -199,6 +209,7 @@ public class BrokerRegistration {
         directories.sort(Uuid::compareTo);
         this.directories = Collections.unmodifiableList(directories);
         this.cordonedDirectories = cordonedDirectories == null ? null : Collections.unmodifiableList(cordonedDirectories);
+        this.isrHold = isrHold;
     }
 
     public static BrokerRegistration fromRecord(RegisterBrokerRecord record) {
@@ -224,7 +235,8 @@ public class BrokerRegistration {
             record.inControlledShutdown(),
             record.isMigratingZkBroker(),
             record.logDirs(),
-            record.cordonedLogDirs());
+            record.cordonedLogDirs(),
+            record.isrHold());
     }
 
     public int id() {
@@ -277,6 +289,14 @@ public class BrokerRegistration {
 
     public List<Uuid> cordonedDirectories() {
         return cordonedDirectories;
+    }
+
+    /**
+     * True if the broker is on ISR hold: partition leaders do not add it to the ISR unless the
+     * ISR is below the minimum size. A fenced broker is never on ISR hold.
+     */
+    public boolean isrHold() {
+        return isrHold;
     }
 
     public boolean hasOnlineDir(Uuid dir) {
@@ -364,14 +384,19 @@ public class BrokerRegistration {
                 setMaxSupportedVersion(entry.getValue().max()));
         }
 
-        return new ApiMessageAndVersion(registrationRecord,
-            options.metadataVersion().registerBrokerRecordVersion());
+        short version = options.metadataVersion().registerBrokerRecordVersion();
+        if (isrHold) {
+            // A broker can only be on ISR hold if every node supports the record version with the field.
+            registrationRecord.setIsrHold(true);
+            version = (short) Math.max(version, 5);
+        }
+        return new ApiMessageAndVersion(registrationRecord, version);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(id, epoch, incarnationId, listeners, supportedFeatures,
-            rack, fenced, inControlledShutdown, isMigratingZkBroker, directories, cordonedDirectories);
+            rack, fenced, inControlledShutdown, isMigratingZkBroker, directories, cordonedDirectories, isrHold);
     }
 
     @Override
@@ -387,7 +412,8 @@ public class BrokerRegistration {
             other.inControlledShutdown == inControlledShutdown &&
             other.isMigratingZkBroker == isMigratingZkBroker &&
             other.directories.equals(directories) &&
-            Objects.equals(other.cordonedDirectories, cordonedDirectories);
+            Objects.equals(other.cordonedDirectories, cordonedDirectories) &&
+            other.isrHold == isrHold;
     }
 
     @Override
@@ -410,6 +436,7 @@ public class BrokerRegistration {
                 ", isMigratingZkBroker=" + isMigratingZkBroker +
                 ", directories=" + directories +
                 ", cordonedDirectories=" + cordonedDirectories +
+                ", isrHold=" + isrHold +
                 ")";
     }
 
@@ -417,9 +444,12 @@ public class BrokerRegistration {
         Optional<Boolean> fencingChange,
         Optional<Boolean> inControlledShutdownChange,
         Optional<List<Uuid>> directoriesChange,
-        Optional<List<Uuid>> cordonedDirectoriesChange
+        Optional<List<Uuid>> cordonedDirectoriesChange,
+        Optional<Boolean> isrHoldChange
     ) {
         boolean newFenced = fencingChange.orElse(fenced);
+        // Fencing a broker releases its ISR hold. The broker starts over when it is unfenced.
+        boolean newIsrHold = !newFenced && isrHoldChange.orElse(isrHold);
         boolean newInControlledShutdownChange = inControlledShutdownChange.orElse(inControlledShutdown);
         List<Uuid> newDirectories = directoriesChange.orElse(directories);
         List<Uuid> newCordonedDirectories = cordonedDirectoriesChange.orElse(cordonedDirectories);
@@ -427,7 +457,8 @@ public class BrokerRegistration {
         if (newFenced == fenced
                 && newInControlledShutdownChange == inControlledShutdown
                 && newDirectories.equals(directories)
-                && Objects.equals(newCordonedDirectories, cordonedDirectories))
+                && Objects.equals(newCordonedDirectories, cordonedDirectories)
+                && newIsrHold == isrHold)
             return this;
 
         return new BrokerRegistration(
@@ -441,7 +472,8 @@ public class BrokerRegistration {
             newInControlledShutdownChange,
             isMigratingZkBroker,
             newDirectories,
-            newCordonedDirectories
+            newCordonedDirectories,
+            newIsrHold
         );
     }
 }

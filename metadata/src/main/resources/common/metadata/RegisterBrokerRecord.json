@@ -17,11 +17,12 @@
 // Version 2 adds IsMigratingZkBroker
 // Version 3 adds LogDirs
 // Version 4 adds CordonedLogDirs
+// Version 5 adds IsrHold
 {
   "apiKey": 0,
   "type": "metadata",
   "name": "RegisterBrokerRecord",
-  "validVersions": "0-4",
+  "validVersions": "0-5",
   "flexibleVersions": "0+",
   "fields": [
     { "name": "BrokerId", "type": "int32", "versions": "0+", "entityType": "brokerId",
@@ -62,6 +63,8 @@
       "about": "Log directories configured in this broker which are available." },
     { "name": "CordonedLogDirs", "type":  "[]uuid", "versions":  "4+", "taggedVersions": "4+", "tag": 1,
       "nullableVersions": "4+", "default":  "null",
-      "about": "Log directories that are cordoned. This is initially null before the broker starts sending the value via its heartbeats." }
+      "about": "Log directories that are cordoned. This is initially null before the broker starts sending the value via its heartbeats." },
+    { "name": "IsrHold", "type": "bool", "versions": "5+", "taggedVersions": "5+", "tag": 2, "default": "false",
+      "about": "True if the broker is on ISR hold: partition leaders do not add it to the ISR unless the ISR is below the minimum size." }
   ]
 }

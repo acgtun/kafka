@@ -135,28 +135,28 @@ public class BrokerRegistrationTest {
             "listenerName='INTERNAL', securityProtocol=PLAINTEXT, " +
             "host='localhost', port=9091)], supportedFeatures={foo: 1-2}, " +
             "rack=Optional.empty, fenced=true, inControlledShutdown=false, isMigratingZkBroker=false, " +
-            "directories=[], cordonedDirectories=null)",
+            "directories=[], cordonedDirectories=null, isrHold=false)",
             REGISTRATIONS.get(1).toString());
         assertEquals("BrokerRegistration(id=2, epoch=0, " +
             "incarnationId=eY7oaG1RREie5Kk9uy1l6g, listeners=[Endpoint(" +
             "listenerName='INTERNAL', securityProtocol=PLAINTEXT, " +
             "host='localhost', port=9092)], supportedFeatures={bar: 1-4, foo: 2-3}, " +
             "rack=Optional[myrack], fenced=false, inControlledShutdown=true, isMigratingZkBroker=false, " +
-            "directories=[], cordonedDirectories=null)",
+            "directories=[], cordonedDirectories=null, isrHold=false)",
             REGISTRATIONS.get(2).toString());
         assertEquals("BrokerRegistration(id=3, epoch=0, " +
             "incarnationId=1t8VyWx2TCSTpUWuqj-FOw, listeners=[Endpoint(" +
             "listenerName='INTERNAL', securityProtocol=PLAINTEXT, " +
             "host='localhost', port=9093)], supportedFeatures={metadata.version: 7}, " +
             "rack=Optional.empty, fenced=false, inControlledShutdown=true, isMigratingZkBroker=true, " +
-            "directories=[r4HpEsMuST6nQ4rznIEJVA], cordonedDirectories=[r4HpEsMuST6nQ4rznIEJVA])",
+            "directories=[r4HpEsMuST6nQ4rznIEJVA], cordonedDirectories=[r4HpEsMuST6nQ4rznIEJVA], isrHold=false)",
             REGISTRATIONS.get(3).toString());
         assertEquals("BrokerRegistration(id=4, epoch=0, " +
             "incarnationId=Xkq84F5bTsSEwHqceVxcOQ, listeners=[Endpoint(" +
             "listenerName='INTERNAL', securityProtocol=PLAINTEXT, " +
             "host='localhost', port=9094)], supportedFeatures={foo: 1-2}, " +
             "rack=Optional.empty, fenced=true, inControlledShutdown=false, isMigratingZkBroker=false, " +
-            "directories=[r4HpEsMuST6nQ4rznIEJVA], cordonedDirectories=null)",
+            "directories=[r4HpEsMuST6nQ4rznIEJVA], cordonedDirectories=null, isrHold=false)",
             REGISTRATIONS.get(4).toString());
     }
 
@@ -179,6 +179,48 @@ public class BrokerRegistrationTest {
         ApiMessageAndVersion messageAndVersion2 = registration2.
             toRecord(options);
         assertEquals(messageAndVersion, messageAndVersion2);
+    }
+
+    @Test
+    public void testIsrHold() {
+        BrokerRegistration unfenced = REGISTRATIONS.get(0);
+        assertFalse(unfenced.isrHold());
+
+        BrokerRegistration held = unfenced.cloneWith(Optional.empty(), Optional.empty(), Optional.empty(),
+            Optional.empty(), BrokerRegistrationIsrHoldChange.HOLD.asBoolean());
+        assertTrue(held.isrHold());
+        assertNotEquals(unfenced, held);
+        assertTrue(held.toString().endsWith(", isrHold=true)"));
+        // No change keeps the hold.
+        assertEquals(held, held.cloneWith(Optional.empty(), Optional.empty(), Optional.empty(),
+            Optional.empty(), BrokerRegistrationIsrHoldChange.NONE.asBoolean()));
+
+        // The hold is written with version 5 of the record, whatever the metadata version is.
+        ImageWriterOptions options = new ImageWriterOptions.Builder(MetadataVersion.latestProduction()).build();
+        ApiMessageAndVersion record = held.toRecord(options);
+        assertEquals((short) 5, record.version());
+        assertTrue(((RegisterBrokerRecord) record.message()).isrHold());
+        testRoundTrip(held);
+        assertEquals(MetadataVersion.latestProduction().registerBrokerRecordVersion(),
+            unfenced.toRecord(options).version());
+
+        // Releasing the hold, or fencing the broker, clears it.
+        assertEquals(unfenced, held.cloneWith(Optional.empty(), Optional.empty(), Optional.empty(),
+            Optional.empty(), BrokerRegistrationIsrHoldChange.RELEASE.asBoolean()));
+        BrokerRegistration fenced = held.cloneWith(BrokerRegistrationFencingChange.FENCE.asBoolean(),
+            Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+        assertTrue(fenced.fenced());
+        assertFalse(fenced.isrHold());
+        // A broker cannot be put on hold in the same change that fences it.
+        assertFalse(unfenced.cloneWith(BrokerRegistrationFencingChange.FENCE.asBoolean(),
+            Optional.empty(), Optional.empty(), Optional.empty(),
+            BrokerRegistrationIsrHoldChange.HOLD.asBoolean()).isrHold());
+        // It can be put on hold in the same change that unfences it.
+        BrokerRegistration unfencedAndHeld = fenced.cloneWith(BrokerRegistrationFencingChange.UNFENCE.asBoolean(),
+            Optional.empty(), Optional.empty(), Optional.empty(),
+            BrokerRegistrationIsrHoldChange.HOLD.asBoolean());
+        assertFalse(unfencedAndHeld.fenced());
+        assertTrue(unfencedAndHeld.isrHold());
     }
 
     @Test
