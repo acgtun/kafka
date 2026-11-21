@@ -41,6 +41,7 @@ import org.apache.kafka.server.common.EligibleLeaderReplicasVersion;
 import org.apache.kafka.server.common.GroupVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 import org.apache.kafka.server.common.ShareVersion;
+import org.apache.kafka.server.common.SoftFencingVersion;
 import org.apache.kafka.server.common.StreamsVersion;
 import org.apache.kafka.server.common.TransactionVersion;
 import org.apache.kafka.test.TestUtils;
@@ -228,11 +229,11 @@ public class ApiVersionsRequestTest {
                                      boolean enableUnstableLastVersion,
                                      short apiVersion) {
         if (apiVersion >= 3) {
-            assertEquals(6, apiVersionsResponse.data().finalizedFeatures().size());
+            assertEquals(7, apiVersionsResponse.data().finalizedFeatures().size());
             assertEquals(MetadataVersion.latestTesting().featureLevel(), apiVersionsResponse.data().finalizedFeatures().find(MetadataVersion.FEATURE_NAME).minVersionLevel());
             assertEquals(MetadataVersion.latestTesting().featureLevel(), apiVersionsResponse.data().finalizedFeatures().find(MetadataVersion.FEATURE_NAME).maxVersionLevel());
 
-            assertEquals(7, apiVersionsResponse.data().supportedFeatures().size());
+            assertEquals(8, apiVersionsResponse.data().supportedFeatures().size());
             assertEquals(MetadataVersion.MINIMUM_VERSION.featureLevel(), apiVersionsResponse.data().supportedFeatures().find(MetadataVersion.FEATURE_NAME).minVersion());
             if (apiVersion < 4) {
                 assertEquals(1, apiVersionsResponse.data().supportedFeatures().find("kraft.version").minVersion());
@@ -255,6 +256,9 @@ public class ApiVersionsRequestTest {
 
             assertEquals(0, apiVersionsResponse.data().supportedFeatures().find(StreamsVersion.FEATURE_NAME).minVersion());
             assertEquals(StreamsVersion.SV_1.featureLevel(), apiVersionsResponse.data().supportedFeatures().find(StreamsVersion.FEATURE_NAME).maxVersion());
+
+            assertEquals(0, apiVersionsResponse.data().supportedFeatures().find(SoftFencingVersion.FEATURE_NAME).minVersion());
+            assertEquals(SoftFencingVersion.SFV_1.featureLevel(), apiVersionsResponse.data().supportedFeatures().find(SoftFencingVersion.FEATURE_NAME).maxVersion());
         }
         ApiVersionsResponseData.ApiVersionCollection expectedApis;
         if (cluster.controllerListenerName().equals(listenerName)) {
