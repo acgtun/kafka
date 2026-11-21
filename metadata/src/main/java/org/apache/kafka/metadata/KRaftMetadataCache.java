@@ -367,6 +367,12 @@ public class KRaftMetadataCache implements MetadataCache {
     }
 
     @Override
+    public boolean isBrokerOnIsrHold(int brokerId) {
+        MetadataImage image = currentImage;
+        return image.cluster().broker(brokerId) != null && image.cluster().broker(brokerId).isrHold();
+    }
+
+    @Override
     public Optional<Node> getAliveBrokerNode(int brokerId, ListenerName listenerName) {
         return Optional.ofNullable(currentImage.cluster().broker(brokerId))
             .filter(Predicate.not(BrokerRegistration::fenced))

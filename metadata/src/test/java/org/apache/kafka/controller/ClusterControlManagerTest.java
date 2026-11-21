@@ -30,6 +30,7 @@ import org.apache.kafka.common.message.BrokerRegistrationRequestData;
 import org.apache.kafka.common.message.ControllerRegistrationRequestData;
 import org.apache.kafka.common.metadata.BrokerRegistrationChangeRecord;
 import org.apache.kafka.common.metadata.FeatureLevelRecord;
+import org.apache.kafka.common.metadata.FenceBrokerRecord;
 import org.apache.kafka.common.metadata.PartitionChangeRecord;
 import org.apache.kafka.common.metadata.RegisterBrokerRecord;
 import org.apache.kafka.common.metadata.RegisterBrokerRecord.BrokerEndpoint;
@@ -44,6 +45,7 @@ import org.apache.kafka.image.writer.ImageWriterOptions;
 import org.apache.kafka.metadata.BrokerRegistration;
 import org.apache.kafka.metadata.BrokerRegistrationFencingChange;
 import org.apache.kafka.metadata.BrokerRegistrationInControlledShutdownChange;
+import org.apache.kafka.metadata.BrokerRegistrationIsrHoldChange;
 import org.apache.kafka.metadata.BrokerRegistrationReply;
 import org.apache.kafka.metadata.FinalizedControllerFeatures;
 import org.apache.kafka.metadata.RecordTestUtils;
@@ -281,6 +283,39 @@ public class ClusterControlManagerTest {
             setCordonedLogDirs(List.of());
         clusterControl.replay(registrationChangeRecord);
         assertEquals(List.of(), clusterControl.registration(0).cordonedDirectories());
+
+        // Put the broker on ISR hold, then release it
+        assertFalse(clusterControl.registration(0).isrHold());
+        clusterControl.replay(new BrokerRegistrationChangeRecord().
+            setBrokerId(0).
+            setBrokerEpoch(100).
+            setIsrHold(BrokerRegistrationIsrHoldChange.HOLD.value()));
+        assertTrue(clusterControl.registration(0).isrHold());
+        clusterControl.replay(new BrokerRegistrationChangeRecord().
+            setBrokerId(0).
+            setBrokerEpoch(100));
+        assertTrue(clusterControl.registration(0).isrHold());
+        clusterControl.replay(new BrokerRegistrationChangeRecord().
+            setBrokerId(0).
+            setBrokerEpoch(100).
+            setIsrHold(BrokerRegistrationIsrHoldChange.RELEASE.value()));
+        assertFalse(clusterControl.registration(0).isrHold());
+
+        // Fencing the broker releases the hold
+        clusterControl.replay(new BrokerRegistrationChangeRecord().
+            setBrokerId(0).
+            setBrokerEpoch(100).
+            setIsrHold(BrokerRegistrationIsrHoldChange.HOLD.value()));
+        assertTrue(clusterControl.registration(0).isrHold());
+        clusterControl.replay(new FenceBrokerRecord().setId(0).setEpoch(100));
+        assertFalse(clusterControl.isUnfenced(0));
+        assertFalse(clusterControl.registration(0).isrHold());
+
+        assertThrows(IllegalStateException.class, () -> clusterControl.replay(
+            new BrokerRegistrationChangeRecord().
+                setBrokerId(0).
+                setBrokerEpoch(100).
+                setIsrHold((byte) 2)));
     }
 
     @Test

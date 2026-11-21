@@ -44,6 +44,7 @@ import org.apache.kafka.controller.metrics.QuorumControllerMetrics;
 import org.apache.kafka.metadata.BrokerRegistration;
 import org.apache.kafka.metadata.BrokerRegistrationFencingChange;
 import org.apache.kafka.metadata.BrokerRegistrationInControlledShutdownChange;
+import org.apache.kafka.metadata.BrokerRegistrationIsrHoldChange;
 import org.apache.kafka.metadata.BrokerRegistrationReply;
 import org.apache.kafka.metadata.ControllerRegistration;
 import org.apache.kafka.metadata.FinalizedControllerFeatures;
@@ -655,6 +656,7 @@ public class ClusterControlManager {
             BrokerRegistrationFencingChange.FENCE.asBoolean(),
             BrokerRegistrationInControlledShutdownChange.NONE.asBoolean(),
             Optional.empty(),
+            Optional.empty(),
             Optional.empty()
         );
     }
@@ -666,6 +668,7 @@ public class ClusterControlManager {
             record.epoch(),
             BrokerRegistrationFencingChange.UNFENCE.asBoolean(),
             BrokerRegistrationInControlledShutdownChange.NONE.asBoolean(),
+            Optional.empty(),
             Optional.empty(),
             Optional.empty()
         );
@@ -682,6 +685,10 @@ public class ClusterControlManager {
                     "value for inControlledShutdown field: %x", record, record.inControlledShutdown())));
         Optional<List<Uuid>> directoriesChange = Optional.ofNullable(record.logDirs()).filter(list -> !list.isEmpty());
         Optional<List<Uuid>> cordonedDirectoriesChange = Optional.ofNullable(record.cordonedLogDirs());
+        BrokerRegistrationIsrHoldChange isrHoldChange =
+            BrokerRegistrationIsrHoldChange.fromValue(record.isrHold()).orElseThrow(
+                () -> new IllegalStateException(String.format("Unable to replay %s: unknown " +
+                    "value for isrHold field: %x", record, record.isrHold())));
         replayRegistrationChange(
             record,
             record.brokerId(),
@@ -689,7 +696,8 @@ public class ClusterControlManager {
             fencingChange.asBoolean(),
             inControlledShutdownChange.asBoolean(),
             directoriesChange,
-            cordonedDirectoriesChange
+            cordonedDirectoriesChange,
+            isrHoldChange.asBoolean()
         );
     }
 
@@ -700,7 +708,8 @@ public class ClusterControlManager {
         Optional<Boolean> fencingChange,
         Optional<Boolean> inControlledShutdownChange,
         Optional<List<Uuid>> directoriesChange,
-        Optional<List<Uuid>> cordonedDirectoriesChange
+        Optional<List<Uuid>> cordonedDirectoriesChange,
+        Optional<Boolean> isrHoldChange
     ) {
         BrokerRegistration curRegistration = brokerRegistrations.get(brokerId);
         if (curRegistration == null) {
@@ -714,7 +723,8 @@ public class ClusterControlManager {
                 fencingChange,
                 inControlledShutdownChange,
                 directoriesChange,
-                cordonedDirectoriesChange
+                cordonedDirectoriesChange,
+                isrHoldChange
             );
             if (!curRegistration.equals(nextRegistration)) {
                 log.info("Replayed {} modifying the registration for broker {}: {}",
