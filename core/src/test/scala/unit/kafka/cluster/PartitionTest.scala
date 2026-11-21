@@ -2093,6 +2093,110 @@ class PartitionTest extends AbstractPartitionTest {
     assertEquals(0, alterPartitionManager.isrUpdates.size)
   }
 
+  private def setupLeaderWithFollowerOutOfIsr(remoteBrokerId: Int): Partition = {
+    val log = logManager.getOrCreateLog(topicPartition, topicId.toJava)
+    seedLogData(log, numRecords = 10, leaderEpoch = 4)
+
+    val replicas = Array(brokerId, remoteBrokerId)
+    val isr = Array(brokerId)
+
+    addBrokerEpochToMockMetadataCache(metadataCache, replicas)
+    val partition = new Partition(
+      topicPartition,
+      replicaLagTimeMaxMs = ReplicationConfigs.REPLICA_LAG_TIME_MAX_MS_DEFAULT,
+      localBrokerId = brokerId,
+      () => defaultBrokerEpoch(brokerId),
+      time,
+      alterPartitionListener,
+      delayedOperations,
+      metadataCache,
+      logManager,
+      alterPartitionManager
+    )
+
+    partition.createLogIfNotExists(isNew = false, isFutureReplica = false, offsetCheckpoints, None)
+    val partitionRegistration = new PartitionRegistration.Builder()
+      .setLeader(brokerId)
+      .setLeaderRecoveryState(LeaderRecoveryState.RECOVERED)
+      .setLeaderEpoch(5)
+      .setIsr(isr)
+      .setPartitionEpoch(1)
+      .setReplicas(replicas)
+      .setDirectories(DirectoryId.unassignedArray(replicas.length))
+      .build()
+    assertTrue(partition.makeLeader(partitionRegistration, isNew = true, offsetCheckpoints, None), "Expected become leader transition to succeed")
+    assertEquals(isr.toSet.asJava, partition.partitionState.isr)
+    partition
+  }
+
+  @Test
+  def testIsrNotExpandedIfReplicaIsOnIsrHold(): Unit = {
+    val remoteBrokerId = brokerId + 1
+    val replicas = Set(brokerId, remoteBrokerId)
+    val isr = Set(brokerId)
+    val partition = setupLeaderWithFollowerOutOfIsr(remoteBrokerId)
+    val log = partition.localLogOrException
+
+    // The follower was put on ISR hold when it was unfenced.
+    when(metadataCache.isBrokerOnIsrHold(remoteBrokerId)).thenReturn(true)
+
+    // The follower catches up to the log end offset.
+    fetchFollower(partition, replicaId = remoteBrokerId, fetchOffset = log.logEndOffset)
+    assertReplicaState(partition, remoteBrokerId,
+      lastCaughtUpTimeMs = time.milliseconds(),
+      logStartOffset = 0L,
+      logEndOffset = log.logEndOffset
+    )
+
+    // Expansion is not triggered because the follower is on hold and the ISR is not below min.insync.replicas.
+    assertEquals(isr.asJava, partition.partitionState.isr)
+    assertEquals(isr.asJava, partition.partitionState.maximalIsr)
+    assertFalse(partition.partitionState.isInflight)
+    assertEquals(0, alterPartitionManager.isrUpdates.size)
+
+    // The high watermark does not wait for the caught up follower either.
+    val records = MemoryRecords.withRecords(Compression.NONE, new SimpleRecord("k".getBytes, "v".getBytes))
+    partition.appendRecordsToLeader(records, origin = AppendOrigin.CLIENT, requiredAcks = 0, RequestLocal.withThreadConfinedCaching)
+    assertEquals(log.logEndOffset, log.highWatermark)
+
+    // The controller releases the hold.
+    when(metadataCache.isBrokerOnIsrHold(remoteBrokerId)).thenReturn(false)
+
+    // The follower fetches again and the expansion is triggered.
+    fetchFollower(partition, replicaId = remoteBrokerId, fetchOffset = log.logEndOffset)
+    assertEquals(isr.asJava, partition.partitionState.isr)
+    assertEquals(replicas.asJava, partition.partitionState.maximalIsr)
+    assertEquals(1, alterPartitionManager.isrUpdates.size)
+
+    alterPartitionManager.completeIsrUpdate(2)
+    assertEquals(replicas.asJava, partition.partitionState.isr)
+    assertFalse(partition.partitionState.isInflight)
+  }
+
+  @Test
+  def testIsrExpandedForReplicaOnIsrHoldWhenUnderMinIsr(): Unit = {
+    configRepository.setTopicConfig(topicPartition.topic, TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "2")
+    val remoteBrokerId = brokerId + 1
+    val replicas = Set(brokerId, remoteBrokerId)
+    val isr = Set(brokerId)
+    val partition = setupLeaderWithFollowerOutOfIsr(remoteBrokerId)
+    val log = partition.localLogOrException
+    assertTrue(partition.isUnderMinIsr)
+
+    when(metadataCache.isBrokerOnIsrHold(remoteBrokerId)).thenReturn(true)
+
+    // The follower is on hold, but without it the partition stays below min.insync.replicas,
+    // so the expansion is triggered as soon as it has caught up.
+    fetchFollower(partition, replicaId = remoteBrokerId, fetchOffset = log.logEndOffset)
+    assertEquals(isr.asJava, partition.partitionState.isr)
+    assertEquals(replicas.asJava, partition.partitionState.maximalIsr)
+    assertEquals(1, alterPartitionManager.isrUpdates.size)
+
+    alterPartitionManager.completeIsrUpdate(2)
+    assertEquals(replicas.asJava, partition.partitionState.isr)
+    assertFalse(partition.isUnderMinIsr)
+  }
+
   @Test
   def testRetryShrinkIsr(): Unit = {
     val log = logManager.getOrCreateLog(topicPartition, Optional.empty)
