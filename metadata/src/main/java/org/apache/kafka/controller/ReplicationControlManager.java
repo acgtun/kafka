@@ -396,6 +396,11 @@ public class ReplicationControlManager {
     private final TimelineHashMap<Integer, Integer> outOfSyncReplicaCounts;
 
     /**
+     * The brokers that are soft-fenced. This is soft state of the active controller.
+     */
+    private final SoftFenceManager softFenceManager;
+
+    /**
      * A ClusterDescriber which supplies cluster information to our ReplicaPlacer.
      */
     final KRaftClusterDescriber clusterDescriber = new KRaftClusterDescriber();
@@ -431,6 +436,65 @@ public class ReplicationControlManager {
         this.imbalancedPartitions = new TimelineHashSet<>(snapshotRegistry, 0);
         this.directoriesToPartitions = new TimelineHashMap<>(snapshotRegistry, 0);
         this.outOfSyncReplicaCounts = new TimelineHashMap<>(snapshotRegistry, 0);
+        this.softFenceManager = new SoftFenceManager(logContext);
+    }
+
+    /**
+     * Transition this ReplicationControlManager to active.
+     *
+     * Soft fences are not stored in the metadata log, so we do not know which brokers the previous
+     * active controller had soft-fenced. Soft-fence every unfenced broker that is still out of sync.
+     */
+    void activate() {
+        SoftFencingConfig config = configurationControl.softFencingConfig();
+        if (!config.enabled()) {
+            return;
+        }
+        long nowNs = clusterControl.time().nanoseconds();
+        for (BrokerRegistration registration : clusterControl.brokerRegistrations().values()) {
+            int brokerId = registration.id();
+            int outOfSyncReplicas = outOfSyncReplicaCount(brokerId);
+            if (!registration.fenced() && outOfSyncReplicas > config.exitOutOfSyncPartitions()) {
+                softFenceManager.softFence(brokerId, nowNs, "this controller became active while the broker had " +
+                    outOfSyncReplicas + " out-of-sync replica(s)");
+            }
+        }
+    }
+
+    /**
+     * Transition this ReplicationControlManager to standby.
+     */
+    void deactivate() {
+        softFenceManager.clear("this controller is no longer active");
+    }
+
+    boolean isSoftFenced(int brokerId) {
+        return softFenceManager.isSoftFenced(brokerId);
+    }
+
+    Set<Integer> softFencedBrokers() {
+        return softFenceManager.softFencedBrokers();
+    }
+
+    /**
+     * Lift the soft fence of the brokers that have caught up. No records are generated: the
+     * brokers become normal leader candidates again, and the next preferred leader election
+     * moves leadership back to them.
+     */
+    ControllerResult<Boolean> maybeLiftSoftFences() {
+        SoftFencingConfig config = configurationControl.softFencingConfig();
+        if (!config.enabled()) {
+            softFenceManager.clear("soft fencing is disabled");
+            return ControllerResult.of(List.of(), false);
+        }
+        for (int brokerId : softFenceManager.softFencedBrokers()) {
+            if (!clusterControl.isUnfenced(brokerId)) {
+                softFenceManager.remove(brokerId, "it is no longer unfenced");
+            }
+        }
+        softFenceManager.maybeLift(config, clusterControl.time().nanoseconds(),
+            brokerId -> outOfSyncReplicaCount(brokerId) <= config.exitOutOfSyncPartitions());
+        return ControllerResult.of(List.of(), false);
     }
 
     public void replay(TopicRecord record) {
@@ -1163,7 +1227,7 @@ public class ReplicationControlManager {
                     featureControl.metadataVersionOrThrow(),
                     getTopicEffectiveMinIsr(topic.name),
                     featureControl.isElrFeatureEnabled()
-                );
+                ).setIsSoftFenced(softFenceManager::isSoftFenced);
                 if (configurationControl.uncleanLeaderElectionEnabledForTopic(topic.name())) {
                     builder.setElection(PartitionChangeBuilder.Election.UNCLEAN);
                 }
@@ -1481,6 +1545,7 @@ public class ReplicationControlManager {
         if (brokerRegistration == null) {
             throw new RuntimeException("Can't find broker registration for broker " + brokerId);
         }
+        softFenceManager.remove(brokerId, "it was fenced");
         generateLeaderAndIsrUpdates("handleBrokerFenced", brokerId, NO_LEADER, NO_LEADER, records,
             brokersToIsrs.partitionsWithBrokerInIsr(brokerId));
         records.add(new ApiMessageAndVersion(new BrokerRegistrationChangeRecord().
@@ -1501,6 +1566,7 @@ public class ReplicationControlManager {
      */
     void handleBrokerUnregistered(int brokerId, long brokerEpoch,
                                   List<ApiMessageAndVersion> records) {
+        softFenceManager.remove(brokerId, "it was unregistered");
         generateLeaderAndIsrUpdates("handleBrokerUnregistered", brokerId, NO_LEADER, NO_LEADER, records,
             brokersToIsrs.partitionsWithBrokerInIsr(brokerId));
         generateLeaderAndIsrUpdates("handleBrokerUnregistered", brokerId, NO_LEADER, NO_LEADER, records,
@@ -1522,12 +1588,27 @@ public class ReplicationControlManager {
      * @param records       The record list to append to.
      */
     void handleBrokerUnfenced(int brokerId, long brokerEpoch, List<ApiMessageAndVersion> records) {
+        maybeSoftFenceUnfencedBroker(brokerId);
         records.add(new ApiMessageAndVersion(new BrokerRegistrationChangeRecord().
             setBrokerId(brokerId).setBrokerEpoch(brokerEpoch).
             setFenced(BrokerRegistrationFencingChange.UNFENCE.value()),
             (short) 0));
         generateLeaderAndIsrUpdates("handleBrokerUnfenced", NO_LEADER, brokerId, NO_LEADER, records,
             brokersToIsrs.partitionsWithNoLeader());
+    }
+
+    /**
+     * Soft-fence a broker that is being unfenced if it is still out of sync. A broker that was
+     * fenced was removed from the ISR of its partitions, so it normally has to catch up first.
+     */
+    private void maybeSoftFenceUnfencedBroker(int brokerId) {
+        softFenceManager.remove(brokerId, "it is being unfenced again");
+        SoftFencingConfig config = configurationControl.softFencingConfig();
+        int outOfSyncReplicas = outOfSyncReplicaCount(brokerId);
+        if (config.enabled() && outOfSyncReplicas > config.exitOutOfSyncPartitions()) {
+            softFenceManager.softFence(brokerId, clusterControl.time().nanoseconds(),
+                "it was unfenced with " + outOfSyncReplicas + " out-of-sync replica(s)");
+        }
     }
 
     /**
@@ -1560,6 +1641,7 @@ public class ReplicationControlManager {
      * @param records            The record list to append to.
      */
     void handleBrokerShutdown(int brokerId, boolean isCleanShutdown, List<ApiMessageAndVersion> records) {
+        softFenceManager.remove(brokerId, "it shut down");
         if (featureControl.isElrFeatureEnabled() && !isCleanShutdown) {
             // ELR is enabled, generate unclean shutdown partition change records
             generateLeaderAndIsrUpdates("handleBrokerUncleanShutdown", NO_LEADER, NO_LEADER, brokerId, records,
@@ -1732,6 +1814,7 @@ public class ReplicationControlManager {
             getTopicEffectiveMinIsr(topic),
             featureControl.isElrFeatureEnabled()
         )
+            .setIsSoftFenced(softFenceManager::isSoftFenced)
             .setElection(election)
             .setDefaultDirProvider(clusterDescriber)
             .build();
@@ -1899,6 +1982,7 @@ public class ReplicationControlManager {
                 getTopicEffectiveMinIsr(topic.name),
                 featureControl.isElrFeatureEnabled()
             )
+                .setIsSoftFenced(softFenceManager::isSoftFenced)
                 .setElection(PartitionChangeBuilder.Election.PREFERRED)
                 .setDefaultDirProvider(clusterDescriber)
                 .build().ifPresent(records::add);
@@ -2181,7 +2265,7 @@ public class ReplicationControlManager {
                 featureControl.metadataVersionOrThrow(),
                 getTopicEffectiveMinIsr(topic.name),
                 featureControl.isElrFeatureEnabled()
-            );
+            ).setIsSoftFenced(softFenceManager::isSoftFenced);
             if (configurationControl.uncleanLeaderElectionEnabledForTopic(topic.name)) {
                 builder.setElection(PartitionChangeBuilder.Election.UNCLEAN);
             }
@@ -2301,7 +2385,7 @@ public class ReplicationControlManager {
             featureControl.metadataVersionOrThrow(),
             getTopicEffectiveMinIsr(topicName),
             featureControl.isElrFeatureEnabled()
-        );
+        ).setIsSoftFenced(softFenceManager::isSoftFenced);
         if (configurationControl.uncleanLeaderElectionEnabledForTopic(topicName)) {
             builder.setElection(PartitionChangeBuilder.Election.UNCLEAN);
         }
@@ -2367,7 +2451,7 @@ public class ReplicationControlManager {
             featureControl.metadataVersionOrThrow(),
             getTopicEffectiveMinIsr(topics.get(tp.topicId()).name),
             featureControl.isElrFeatureEnabled()
-        );
+        ).setIsSoftFenced(softFenceManager::isSoftFenced);
         if (!reassignment.replicas().equals(currentReplicas)) {
             builder.setTargetReplicas(reassignment.replicas());
         }
@@ -2451,6 +2535,7 @@ public class ReplicationControlManager {
                                     getTopicEffectiveMinIsr(topicName),
                                     featureControl.isElrFeatureEnabled()
                             )
+                                    .setIsSoftFenced(softFenceManager::isSoftFenced)
                                     .setDirectory(brokerId, dirId)
                                     .setDefaultDirProvider(clusterDescriber)
                                     .build();

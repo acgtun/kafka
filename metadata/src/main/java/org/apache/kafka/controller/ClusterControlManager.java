@@ -304,6 +304,10 @@ public class ClusterControlManager {
         this.metrics = metrics;
     }
 
+    Time time() {
+        return time;
+    }
+
     ReplicaPlacer replicaPlacer() {
         return replicaPlacer;
     }
