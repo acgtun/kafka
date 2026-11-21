@@ -135,6 +135,40 @@ class AbstractFetcherThreadTest {
   }
 
   @Test
+  def testOutOfSyncPartitionCount(): Unit = {
+    val partition = new TopicPartition("topic", 0)
+    val mockLeaderEndpoint = new MockLeaderEndPoint(version = version)
+    val mockTierStateMachine = new MockTierStateMachine(mockLeaderEndpoint)
+    val fetcher = new MockFetcherThread(mockLeaderEndpoint, mockTierStateMachine)
+    assertEquals(0, fetcher.outOfSyncPartitionCount)
+
+    fetcher.setReplicaState(partition, PartitionState(leaderEpoch = 0))
+    fetcher.addPartitions(Map(partition -> initialFetchState(topicIds.get(partition.topic), 0L, leaderEpoch = 0)))
+    // No fetch has completed yet.
+    assertEquals(1, fetcher.outOfSyncPartitionCount)
+
+    val batch1 = mkBatch(baseOffset = 0L, leaderEpoch = 0,
+      new SimpleRecord("a".getBytes), new SimpleRecord("b".getBytes))
+    val batch2 = mkBatch(baseOffset = 2L, leaderEpoch = 0, new SimpleRecord("c".getBytes))
+    val leaderState = PartitionState(Seq(batch1, batch2), leaderEpoch = 0, highWatermark = 3L)
+    fetcher.mockLeader.setLeaderState(partition, leaderState)
+    fetcher.mockLeader.setReplicaPartitionStateCallback(fetcher.replicaPartitionState)
+
+    // The mock leader returns one batch per fetch, so the first fetch leaves the replica behind
+    // the leader's high watermark.
+    fetcher.doWork()
+    assertEquals(2L, fetcher.replicaPartitionState(partition).logEndOffset)
+    assertEquals(1, fetcher.outOfSyncPartitionCount)
+
+    fetcher.doWork()
+    assertEquals(3L, fetcher.replicaPartitionState(partition).logEndOffset)
+    assertEquals(0, fetcher.outOfSyncPartitionCount)
+
+    fetcher.removePartitions(Set(partition))
+    assertEquals(0, fetcher.outOfSyncPartitionCount)
+  }
+
+  @Test
   def testDelay(): Unit = {
     val partition = new TopicPartition("topic", 0)
     val fetchBackOffMs = 250

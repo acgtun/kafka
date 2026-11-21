@@ -379,6 +379,8 @@ class BrokerServer(
         directoryEventHandler = directoryEventHandler,
         defaultActionQueue = defaultActionQueue
       )
+      lifecycleManager.setOutOfSyncPartitionsProvider(
+        () => Integer.valueOf(replicaManager.outOfSyncFollowerPartitionCount))
 
       /* start token manager */
       tokenManager = new DelegationTokenManager(new DelegationTokenManagerConfigs(config), tokenCache)
