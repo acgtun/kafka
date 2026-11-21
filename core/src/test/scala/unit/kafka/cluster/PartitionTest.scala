@@ -2171,6 +2171,8 @@ class PartitionTest extends AbstractPartitionTest {
     alterPartitionManager.completeIsrUpdate(2)
     assertEquals(replicas.asJava, partition.partitionState.isr)
     assertFalse(partition.partitionState.isInflight)
+    assertEquals(1, alterPartitionListener.expands.get)
+    assertEquals(0, alterPartitionListener.isrHoldBypasses.get)
   }
 
   @Test
@@ -2195,6 +2197,8 @@ class PartitionTest extends AbstractPartitionTest {
     alterPartitionManager.completeIsrUpdate(2)
     assertEquals(replicas.asJava, partition.partitionState.isr)
     assertFalse(partition.isUnderMinIsr)
+    assertEquals(1, alterPartitionListener.expands.get)
+    assertEquals(1, alterPartitionListener.isrHoldBypasses.get)
   }
 
   @Test

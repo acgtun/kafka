@@ -212,6 +212,7 @@ class ReplicaManager(val config: KafkaConfig,
   metricsGroup.newGauge(JReplicaManager.REASSIGNING_PARTITIONS, () => reassigningPartitionsCount)
   metricsGroup.newGauge(JReplicaManager.PARTITIONS_WITH_LATE_TRANSACTIONS_COUNT, () => lateTransactionsCount)
   metricsGroup.newGauge(JReplicaManager.PRODUCER_ID_COUNT, () => producerIdCount)
+  metricsGroup.newGauge(JReplicaManager.OUT_OF_SYNC_FOLLOWER_PARTITION_COUNT, () => outOfSyncFollowerPartitionCount)
 
   private def reassigningPartitionsCount: Int = leaderPartitionsIterator.count(_.isReassigning)
 
@@ -225,6 +226,7 @@ class ReplicaManager(val config: KafkaConfig,
   val isrExpandRate: Meter = metricsGroup.newMeter(JReplicaManager.ISR_EXPANDS_PER_SEC, "expands", TimeUnit.SECONDS)
   val isrShrinkRate: Meter = metricsGroup.newMeter(JReplicaManager.ISR_SHRINKS_PER_SEC, "shrinks", TimeUnit.SECONDS)
   val failedIsrUpdatesRate: Meter = metricsGroup.newMeter(JReplicaManager.FAILED_ISR_UPDATES_PER_SEC, "failedUpdates", TimeUnit.SECONDS)
+  val isrHoldBypassRate: Meter = metricsGroup.newMeter(JReplicaManager.ISR_HOLD_BYPASSES_PER_SEC, "bypasses", TimeUnit.SECONDS)
 
   def underReplicatedPartitionCount: Int = leaderPartitionsIterator.count(_.isUnderReplicated)
 

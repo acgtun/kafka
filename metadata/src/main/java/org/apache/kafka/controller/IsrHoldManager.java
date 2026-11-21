@@ -17,6 +17,7 @@
 package org.apache.kafka.controller;
 
 import org.apache.kafka.common.utils.internals.LogContext;
+import org.apache.kafka.controller.metrics.QuorumControllerMetrics;
 
 import org.slf4j.Logger;
 
@@ -54,10 +55,12 @@ class IsrHoldManager {
     }
 
     private final Logger log;
+    private final QuorumControllerMetrics metrics;
     private final Map<Integer, HeldBroker> heldBrokers = new HashMap<>();
 
-    IsrHoldManager(LogContext logContext) {
+    IsrHoldManager(LogContext logContext, QuorumControllerMetrics metrics) {
         this.log = logContext.logger(IsrHoldManager.class);
+        this.metrics = metrics;
     }
 
     Set<Integer> trackedBrokers() {
@@ -77,6 +80,7 @@ class IsrHoldManager {
                 log.info("Tracking broker {}, which is on ISR hold.", brokerId);
             }
         }
+        metrics.setIsrHoldBrokerCount(heldBrokers.size());
     }
 
     /**
@@ -98,6 +102,7 @@ class IsrHoldManager {
      */
     void clear() {
         heldBrokers.clear();
+        metrics.setIsrHoldBrokerCount(0);
     }
 
     /**
@@ -142,6 +147,7 @@ class IsrHoldManager {
                 released.put(entry.getKey(), reason);
             }
         }
+        metrics.setIsrHoldBrokerCount(heldBrokers.size());
         return released;
     }
 }
