@@ -30,14 +30,18 @@ import java.util.function.Function;
  * @param exitOutOfSyncPartitions   A broker is soft-fenced while it is out of sync for more partitions than this.
  * @param exitStableMs              How long the exit condition must hold before the soft fence is lifted.
  * @param maxMetadataLagMs          The metadata lag above which a broker is soft-fenced, or -1 to disable.
- * @param maxDurationMs             The longest time a broker stays soft-fenced, or 0 for no limit.
+ * @param maxDurationMs             The longest time a broker stays soft-fenced or on ISR hold, or 0 for no limit.
+ * @param isrHoldEnabled            Whether a broker that is soft-fenced when it is unfenced is also put on ISR hold.
+ * @param isrHoldMaxBrokers         The largest number of brokers on ISR hold at the same time.
  */
 public record SoftFencingConfig(
     boolean enabled,
     int exitOutOfSyncPartitions,
     long exitStableMs,
     long maxMetadataLagMs,
-    long maxDurationMs
+    long maxDurationMs,
+    boolean isrHoldEnabled,
+    int isrHoldMaxBrokers
 ) {
     public static final SoftFencingConfig DEFAULT = fromConfigs(name -> null);
 
@@ -53,7 +57,9 @@ public record SoftFencingConfig(
             (Integer) resolve(SoftFencingConfigs.SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_CONFIG, lookup),
             (Long) resolve(SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG, lookup),
             (Long) resolve(SoftFencingConfigs.SOFT_FENCING_MAX_METADATA_LAG_MS_CONFIG, lookup),
-            (Long) resolve(SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, lookup));
+            (Long) resolve(SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, lookup),
+            (Boolean) resolve(SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG, lookup),
+            (Integer) resolve(SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_MAX_BROKERS_CONFIG, lookup));
     }
 
     private static Object resolve(String name, Function<String, Object> lookup) {

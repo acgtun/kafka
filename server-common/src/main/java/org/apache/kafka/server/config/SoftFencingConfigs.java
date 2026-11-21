@@ -62,19 +62,36 @@ public final class SoftFencingConfigs {
     public static final String SOFT_FENCING_MAX_DURATION_MS_DOC = "The longest time a broker stays soft-fenced. After this " +
         "time the controller lifts the soft fence even if the broker has not caught up. 0 means no limit.";
 
+    public static final String SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG = "soft.fencing.isr.hold.enable";
+    public static final boolean SOFT_FENCING_ISR_HOLD_ENABLE_DEFAULT = false;
+    public static final String SOFT_FENCING_ISR_HOLD_ENABLE_DOC = "Enables ISR hold. When the controller soft-fences a broker " +
+        "that it unfences, it also puts the broker on ISR hold: partition leaders do not add the broker to the ISR, " +
+        "unless the ISR is below <code>min.insync.replicas</code>, until the broker reports that it has caught up. " +
+        "This requires <code>" + SOFT_FENCING_ENABLE_CONFIG + "</code> and the feature <code>soft.fencing.version</code> " +
+        "at level 1 or higher.";
+
+    public static final String SOFT_FENCING_ISR_HOLD_MAX_BROKERS_CONFIG = "soft.fencing.isr.hold.max.brokers";
+    public static final int SOFT_FENCING_ISR_HOLD_MAX_BROKERS_DEFAULT = 1;
+    public static final String SOFT_FENCING_ISR_HOLD_MAX_BROKERS_DOC = "The largest number of brokers that can be on ISR hold " +
+        "at the same time. A broker that is unfenced while this many brokers are on hold is only soft-fenced.";
+
     public static final ConfigDef CONFIG_DEF = new ConfigDef()
         .define(SOFT_FENCING_ENABLE_CONFIG, BOOLEAN, SOFT_FENCING_ENABLE_DEFAULT, MEDIUM, SOFT_FENCING_ENABLE_DOC)
         .define(SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_CONFIG, INT, SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_DEFAULT, atLeast(0), LOW, SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_DOC)
         .define(SOFT_FENCING_EXIT_STABLE_MS_CONFIG, LONG, SOFT_FENCING_EXIT_STABLE_MS_DEFAULT, atLeast(0), LOW, SOFT_FENCING_EXIT_STABLE_MS_DOC)
         .define(SOFT_FENCING_MAX_METADATA_LAG_MS_CONFIG, LONG, SOFT_FENCING_MAX_METADATA_LAG_MS_DEFAULT, atLeast(-1), LOW, SOFT_FENCING_MAX_METADATA_LAG_MS_DOC)
-        .define(SOFT_FENCING_MAX_DURATION_MS_CONFIG, LONG, SOFT_FENCING_MAX_DURATION_MS_DEFAULT, atLeast(0), LOW, SOFT_FENCING_MAX_DURATION_MS_DOC);
+        .define(SOFT_FENCING_MAX_DURATION_MS_CONFIG, LONG, SOFT_FENCING_MAX_DURATION_MS_DEFAULT, atLeast(0), LOW, SOFT_FENCING_MAX_DURATION_MS_DOC)
+        .define(SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG, BOOLEAN, SOFT_FENCING_ISR_HOLD_ENABLE_DEFAULT, MEDIUM, SOFT_FENCING_ISR_HOLD_ENABLE_DOC)
+        .define(SOFT_FENCING_ISR_HOLD_MAX_BROKERS_CONFIG, INT, SOFT_FENCING_ISR_HOLD_MAX_BROKERS_DEFAULT, atLeast(1), LOW, SOFT_FENCING_ISR_HOLD_MAX_BROKERS_DOC);
 
     public static final Set<String> RECONFIGURABLE_CONFIGS = Set.of(
         SOFT_FENCING_ENABLE_CONFIG,
         SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_CONFIG,
         SOFT_FENCING_EXIT_STABLE_MS_CONFIG,
         SOFT_FENCING_MAX_METADATA_LAG_MS_CONFIG,
-        SOFT_FENCING_MAX_DURATION_MS_CONFIG);
+        SOFT_FENCING_MAX_DURATION_MS_CONFIG,
+        SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG,
+        SOFT_FENCING_ISR_HOLD_MAX_BROKERS_CONFIG);
 
     private SoftFencingConfigs() { }
 }
