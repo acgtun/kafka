@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SoftFenceManagerTest {
-    private static final SoftFencingConfig CONFIG = new SoftFencingConfig(true, 0, 1000L, -1L, 0L);
+    private static final SoftFencingConfig CONFIG = new SoftFencingConfig(true, 0, 1000L, -1L, 0L, false, 1);
 
     private final QuorumControllerMetrics metrics =
         new QuorumControllerMetrics(Optional.empty(), new MockTime(), 0);
@@ -97,7 +97,7 @@ public class SoftFenceManagerTest {
     @Test
     public void testLiftImmediatelyWithoutStableTime() {
         SoftFenceManager manager = newManager();
-        SoftFencingConfig config = new SoftFencingConfig(true, 0, 0L, -1L, 0L);
+        SoftFencingConfig config = new SoftFencingConfig(true, 0, 0L, -1L, 0L, false, 1);
         manager.softFence(1, ms(0), "test");
         assertEquals(List.of(), manager.maybeLift(config, ms(1), b -> false));
         assertEquals(List.of(1), manager.maybeLift(config, ms(2), b -> true));
@@ -106,7 +106,7 @@ public class SoftFenceManagerTest {
     @Test
     public void testLiftAfterMaxDuration() {
         SoftFenceManager manager = newManager();
-        SoftFencingConfig config = new SoftFencingConfig(true, 0, 1000L, -1L, 5000L);
+        SoftFencingConfig config = new SoftFencingConfig(true, 0, 1000L, -1L, 5000L, false, 1);
         manager.softFence(1, ms(0), "test");
         manager.softFence(2, ms(3000), "test");
         assertEquals(List.of(), manager.maybeLift(config, ms(4999), b -> false));

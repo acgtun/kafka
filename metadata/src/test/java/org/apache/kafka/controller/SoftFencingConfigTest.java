@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class SoftFencingConfigTest {
     @Test
     public void testDefaults() {
-        assertEquals(new SoftFencingConfig(false, 0, 60000L, -1L, 0L), SoftFencingConfig.DEFAULT);
+        assertEquals(new SoftFencingConfig(false, 0, 60000L, -1L, 0L, false, 1), SoftFencingConfig.DEFAULT);
     }
 
     @Test
@@ -38,8 +38,10 @@ public class SoftFencingConfigTest {
             SoftFencingConfigs.SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_CONFIG, 5,
             SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG, "1000",
             SoftFencingConfigs.SOFT_FENCING_MAX_METADATA_LAG_MS_CONFIG, 30000L,
-            SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, "3600000");
-        assertEquals(new SoftFencingConfig(true, 5, 1000L, 30000L, 3600000L),
+            SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, "3600000",
+            SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG, "true",
+            SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_MAX_BROKERS_CONFIG, "3");
+        assertEquals(new SoftFencingConfig(true, 5, 1000L, 30000L, 3600000L, true, 3),
             SoftFencingConfig.fromConfigs(configs::get));
     }
 
@@ -50,8 +52,10 @@ public class SoftFencingConfigTest {
             SoftFencingConfigs.SOFT_FENCING_EXIT_OUT_OF_SYNC_PARTITIONS_CONFIG, "-1",
             SoftFencingConfigs.SOFT_FENCING_EXIT_STABLE_MS_CONFIG, "soon",
             SoftFencingConfigs.SOFT_FENCING_MAX_METADATA_LAG_MS_CONFIG, "-2",
-            SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, "7200000");
-        assertEquals(new SoftFencingConfig(false, 0, 60000L, -1L, 7200000L),
+            SoftFencingConfigs.SOFT_FENCING_MAX_DURATION_MS_CONFIG, "7200000",
+            SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_ENABLE_CONFIG, "yes",
+            SoftFencingConfigs.SOFT_FENCING_ISR_HOLD_MAX_BROKERS_CONFIG, "0");
+        assertEquals(new SoftFencingConfig(false, 0, 60000L, -1L, 7200000L, false, 1),
             SoftFencingConfig.fromConfigs(configs::get));
     }
 }
