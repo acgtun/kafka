@@ -84,6 +84,7 @@ import org.apache.kafka.metadata.BrokerHeartbeatReply;
 import org.apache.kafka.metadata.BrokerRegistration;
 import org.apache.kafka.metadata.BrokerRegistrationFencingChange;
 import org.apache.kafka.metadata.BrokerRegistrationInControlledShutdownChange;
+import org.apache.kafka.metadata.BrokerRegistrationIsrHoldChange;
 import org.apache.kafka.metadata.KafkaConfigSchema;
 import org.apache.kafka.metadata.LeaderRecoveryState;
 import org.apache.kafka.metadata.PartitionRegistration;
@@ -1645,11 +1646,18 @@ public class ReplicationControlManager {
      * @param records       The record list to append to.
      */
     void handleBrokerUnfenced(int brokerId, long brokerEpoch, List<ApiMessageAndVersion> records) {
-        maybeSoftFenceUnfencedBroker(brokerId);
-        records.add(new ApiMessageAndVersion(new BrokerRegistrationChangeRecord().
+        boolean softFenced = maybeSoftFenceUnfencedBroker(brokerId);
+        BrokerRegistrationChangeRecord record = new BrokerRegistrationChangeRecord().
             setBrokerId(brokerId).setBrokerEpoch(brokerEpoch).
-            setFenced(BrokerRegistrationFencingChange.UNFENCE.value()),
-            (short) 0));
+            setFenced(BrokerRegistrationFencingChange.UNFENCE.value());
+        short recordVersion = 0;
+        if (softFenced && canPutOnIsrHold(brokerId)) {
+            // The broker is unfenced and put on hold by the same record, so that no partition
+            // leader ever sees it unfenced without the hold.
+            record.setIsrHold(BrokerRegistrationIsrHoldChange.HOLD.value());
+            recordVersion = 4;
+        }
+        records.add(new ApiMessageAndVersion(record, recordVersion));
         generateLeaderAndIsrUpdates("handleBrokerUnfenced", NO_LEADER, brokerId, NO_LEADER, records,
             brokersToIsrs.partitionsWithNoLeader());
     }
@@ -1657,15 +1665,46 @@ public class ReplicationControlManager {
     /**
      * Soft-fence a broker that is being unfenced if it is still out of sync. A broker that was
      * fenced was removed from the ISR of its partitions, so it normally has to catch up first.
+     *
+     * @return  True if the broker was soft-fenced.
      */
-    private void maybeSoftFenceUnfencedBroker(int brokerId) {
+    private boolean maybeSoftFenceUnfencedBroker(int brokerId) {
         softFenceManager.remove(brokerId, "it is being unfenced again");
         SoftFencingConfig config = configurationControl.softFencingConfig();
         int outOfSyncReplicas = outOfSyncReplicaCount(brokerId);
         if (config.enabled() && outOfSyncReplicas > config.exitOutOfSyncPartitions()) {
             softFenceManager.softFence(brokerId, clusterControl.time().nanoseconds(),
                 "it was unfenced with " + outOfSyncReplicas + " out-of-sync replica(s)");
+            return true;
         }
+        return false;
+    }
+
+    /**
+     * Returns true if ISR hold is enabled and every broker and controller supports it.
+     */
+    private boolean isIsrHoldActive(SoftFencingConfig config) {
+        return config.enabled() && config.isrHoldEnabled() && featureControl.isIsrHoldSupported();
+    }
+
+    /**
+     * Returns true if a broker that is being unfenced and was just soft-fenced can also be put
+     * on ISR hold. The number of brokers on hold is limited, because a partition whose other
+     * replicas are all on hold only has its leader in the ISR.
+     */
+    private boolean canPutOnIsrHold(int brokerId) {
+        SoftFencingConfig config = configurationControl.softFencingConfig();
+        if (!isIsrHoldActive(config)) {
+            return false;
+        }
+        Set<Integer> brokersOnIsrHold = clusterControl.brokersOnIsrHold();
+        if (brokersOnIsrHold.size() >= config.isrHoldMaxBrokers()) {
+            log.info("Not putting broker {} on ISR hold: brokers {} are already on hold and at most {} can be.",
+                brokerId, brokersOnIsrHold, config.isrHoldMaxBrokers());
+            return false;
+        }
+        log.info("Putting broker {} on ISR hold.", brokerId);
+        return true;
     }
 
     /**
