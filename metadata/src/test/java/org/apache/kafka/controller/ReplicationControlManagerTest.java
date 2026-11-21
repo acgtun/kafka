@@ -674,6 +674,68 @@ public class ReplicationControlManagerTest {
     }
 
     @Test
+    public void testOutOfSyncReplicaCount() {
+        ReplicationControlTestContext ctx = new ReplicationControlTestContext.Builder().build();
+        ReplicationControlManager replication = ctx.replicationControl;
+        ctx.registerBrokers(0, 1, 2, 3);
+        ctx.unfenceBrokers(0, 1, 2, 3);
+        Uuid fooId = ctx.createTestTopic("foo", new int[][] {
+            new int[] {0, 1, 2}, new int[] {1, 2, 0}}).topicId();
+        Uuid barId = ctx.createTestTopic("bar", new int[][] {new int[] {2, 0}}).topicId();
+        for (int brokerId = 0; brokerId < 4; brokerId++) {
+            assertEquals(0, replication.outOfSyncReplicaCount(brokerId));
+        }
+
+        // A fenced broker is removed from the ISR of every partition that has another ISR member.
+        ctx.fenceBrokers(0);
+        assertEquals(3, replication.outOfSyncReplicaCount(0));
+        assertEquals(0, replication.outOfSyncReplicaCount(1));
+        assertEquals(0, replication.outOfSyncReplicaCount(2));
+
+        // The count goes down as the leaders add the broker back to the ISR.
+        ctx.unfenceBrokers(0);
+        assertEquals(3, replication.outOfSyncReplicaCount(0));
+        ctx.alterPartition(new TopicIdPartition(fooId, 0), 1, isrWithDefaultEpoch(1, 2, 0),
+            LeaderRecoveryState.RECOVERED);
+        assertEquals(2, replication.outOfSyncReplicaCount(0));
+        ctx.alterPartition(new TopicIdPartition(barId, 0), 2, isrWithDefaultEpoch(2, 0),
+            LeaderRecoveryState.RECOVERED);
+        assertEquals(1, replication.outOfSyncReplicaCount(0));
+
+        // A replica that a reassignment is adding is not counted. Once the reassignment is done,
+        // the removed replica is not counted either.
+        ControllerResult<AlterPartitionReassignmentsResponseData> reassignment =
+            replication.alterPartitionReassignments(new AlterPartitionReassignmentsRequestData().setTopics(List.of(
+                new ReassignableTopic().setName("bar").setPartitions(List.of(
+                    new ReassignablePartition().setPartitionIndex(0).setReplicas(List.of(2, 3)))))));
+        ctx.replay(reassignment.records());
+        assertEquals(0, replication.outOfSyncReplicaCount(3));
+        ctx.alterPartition(new TopicIdPartition(barId, 0), 2, isrWithDefaultEpoch(2, 0, 3),
+            LeaderRecoveryState.RECOVERED);
+        assertArrayEquals(new int[] {2, 3}, replication.getPartition(barId, 0).replicas);
+        assertEquals(0, replication.outOfSyncReplicaCount(3));
+        assertEquals(1, replication.outOfSyncReplicaCount(0));
+
+        // A partition with no leader is not counted.
+        Uuid bazId = ctx.createTestTopic("baz", new int[][] {new int[] {3, 0}}).topicId();
+        ctx.alterPartition(new TopicIdPartition(bazId, 0), 3, isrWithDefaultEpoch(3),
+            LeaderRecoveryState.RECOVERED);
+        assertEquals(2, replication.outOfSyncReplicaCount(0));
+        ctx.fenceBrokers(3);
+        assertEquals(NO_LEADER, replication.getPartition(bazId, 0).leader);
+        assertEquals(1, replication.outOfSyncReplicaCount(0));
+        ctx.unfenceBrokers(3);
+        assertEquals(3, replication.getPartition(bazId, 0).leader);
+        assertEquals(2, replication.outOfSyncReplicaCount(0));
+
+        // Deleting a topic removes its partitions from the counts.
+        ctx.deleteTopic(anonymousContextFor(ApiKeys.DELETE_TOPICS), bazId);
+        assertEquals(1, replication.outOfSyncReplicaCount(0));
+        ctx.deleteTopic(anonymousContextFor(ApiKeys.DELETE_TOPICS), fooId);
+        assertEquals(0, replication.outOfSyncReplicaCount(0));
+    }
+
+    @Test
     public void testShrinkAndExpandIsr() {
         ReplicationControlTestContext ctx = new ReplicationControlTestContext.Builder().build();
         ReplicationControlManager replicationControl = ctx.replicationControl;
