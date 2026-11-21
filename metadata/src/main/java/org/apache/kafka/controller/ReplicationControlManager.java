@@ -119,6 +119,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.IntPredicate;
 import java.util.function.Supplier;
 
@@ -148,6 +149,11 @@ import static org.apache.kafka.metadata.LeaderConstants.NO_LEADER_CHANGE;
  */
 public class ReplicationControlManager {
     static final int MAX_ELECTIONS_PER_IMBALANCE = 1_000;
+
+    /**
+     * The shortest time for which committed metadata offsets are kept to measure metadata lag.
+     */
+    static final long MIN_METADATA_LAG_SAMPLE_RETENTION_MS = 60_000L;
 
     // The file name limit on most filesystems.
     private static final int MAX_LOG_DIR_NAME_LENGTH = 255;
@@ -401,6 +407,11 @@ public class ReplicationControlManager {
     private final SoftFenceManager softFenceManager;
 
     /**
+     * How far behind the metadata log each broker is. This is soft state of the active controller.
+     */
+    private final MetadataLagTracker metadataLagTracker;
+
+    /**
      * A ClusterDescriber which supplies cluster information to our ReplicaPlacer.
      */
     final KRaftClusterDescriber clusterDescriber = new KRaftClusterDescriber();
@@ -437,6 +448,7 @@ public class ReplicationControlManager {
         this.directoriesToPartitions = new TimelineHashMap<>(snapshotRegistry, 0);
         this.outOfSyncReplicaCounts = new TimelineHashMap<>(snapshotRegistry, 0);
         this.softFenceManager = new SoftFenceManager(logContext);
+        this.metadataLagTracker = new MetadataLagTracker();
     }
 
     /**
@@ -466,6 +478,49 @@ public class ReplicationControlManager {
      */
     void deactivate() {
         softFenceManager.clear("this controller is no longer active");
+        metadataLagTracker.clear();
+    }
+
+    /**
+     * Record the last committed metadata offset, to measure the metadata lag of brokers against.
+     *
+     * @param committedOffset   The last committed metadata offset.
+     */
+    void sampleCommittedMetadataOffset(long committedOffset) {
+        SoftFencingConfig config = configurationControl.softFencingConfig();
+        if (!config.enabled() || config.maxMetadataLagMs() < 0) {
+            metadataLagTracker.clear();
+            return;
+        }
+        // Keep enough history to measure a lag well beyond the configured maximum.
+        long retentionMs = Math.max(2 * config.maxMetadataLagMs(), MIN_METADATA_LAG_SAMPLE_RETENTION_MS);
+        metadataLagTracker.sample(committedOffset, clusterControl.time().nanoseconds(),
+            TimeUnit.MILLISECONDS.toNanos(retentionMs));
+    }
+
+    /**
+     * Update the metadata lag of a broker that sent a heartbeat, and soft-fence the broker if it
+     * is unfenced and too far behind.
+     */
+    private void updateMetadataLag(int brokerId, boolean unfenced, long metadataOffset) {
+        SoftFencingConfig config = configurationControl.softFencingConfig();
+        if (!config.enabled() || config.maxMetadataLagMs() < 0) {
+            return;
+        }
+        long nowNs = clusterControl.time().nanoseconds();
+        long lagMs = TimeUnit.NANOSECONDS.toMillis(
+            metadataLagTracker.updateBrokerLag(brokerId, metadataOffset, nowNs));
+        if (unfenced && lagMs > config.maxMetadataLagMs()) {
+            softFenceManager.softFence(brokerId, nowNs, "its metadata is " + lagMs + " ms behind");
+        }
+    }
+
+    private boolean isSoftFenceExitConditionMet(SoftFencingConfig config, int brokerId) {
+        if (outOfSyncReplicaCount(brokerId) > config.exitOutOfSyncPartitions()) {
+            return false;
+        }
+        return config.maxMetadataLagMs() < 0 ||
+            TimeUnit.NANOSECONDS.toMillis(metadataLagTracker.brokerLagNs(brokerId)) <= config.maxMetadataLagMs();
     }
 
     boolean isSoftFenced(int brokerId) {
@@ -493,7 +548,7 @@ public class ReplicationControlManager {
             }
         }
         softFenceManager.maybeLift(config, clusterControl.time().nanoseconds(),
-            brokerId -> outOfSyncReplicaCount(brokerId) <= config.exitOutOfSyncPartitions());
+            brokerId -> isSoftFenceExitConditionMet(config, brokerId));
         return ControllerResult.of(List.of(), false);
     }
 
@@ -1546,6 +1601,7 @@ public class ReplicationControlManager {
             throw new RuntimeException("Can't find broker registration for broker " + brokerId);
         }
         softFenceManager.remove(brokerId, "it was fenced");
+        metadataLagTracker.removeBroker(brokerId);
         generateLeaderAndIsrUpdates("handleBrokerFenced", brokerId, NO_LEADER, NO_LEADER, records,
             brokersToIsrs.partitionsWithBrokerInIsr(brokerId));
         records.add(new ApiMessageAndVersion(new BrokerRegistrationChangeRecord().
@@ -1567,6 +1623,7 @@ public class ReplicationControlManager {
     void handleBrokerUnregistered(int brokerId, long brokerEpoch,
                                   List<ApiMessageAndVersion> records) {
         softFenceManager.remove(brokerId, "it was unregistered");
+        metadataLagTracker.removeBroker(brokerId);
         generateLeaderAndIsrUpdates("handleBrokerUnregistered", brokerId, NO_LEADER, NO_LEADER, records,
             brokersToIsrs.partitionsWithBrokerInIsr(brokerId));
         generateLeaderAndIsrUpdates("handleBrokerUnregistered", brokerId, NO_LEADER, NO_LEADER, records,
@@ -1642,6 +1699,7 @@ public class ReplicationControlManager {
      */
     void handleBrokerShutdown(int brokerId, boolean isCleanShutdown, List<ApiMessageAndVersion> records) {
         softFenceManager.remove(brokerId, "it shut down");
+        metadataLagTracker.removeBroker(brokerId);
         if (featureControl.isElrFeatureEnabled() && !isCleanShutdown) {
             // ELR is enabled, generate unclean shutdown partition change records
             generateLeaderAndIsrUpdates("handleBrokerUncleanShutdown", NO_LEADER, NO_LEADER, brokerId, records,
@@ -1857,6 +1915,7 @@ public class ReplicationControlManager {
         heartbeatManager.touch(brokerId,
             states.next().fenced(),
             request.currentMetadataOffset());
+        updateMetadataLag(brokerId, !states.next().fenced(), request.currentMetadataOffset());
         if (featureControl.metadataVersionOrThrow().isDirectoryAssignmentSupported()) {
             handleDirectoriesOffline(brokerId, brokerEpoch, request.offlineLogDirs(), records);
         }
