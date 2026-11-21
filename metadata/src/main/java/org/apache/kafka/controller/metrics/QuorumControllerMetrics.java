@@ -74,6 +74,8 @@ public class QuorumControllerMetrics implements AutoCloseable {
         "KafkaController", "SoftFencedReplicasSkippedCount");
     private static final MetricName SOFT_FENCED_LEADER_ELECTIONS_COUNT = getMetricName(
         "KafkaController", "SoftFencedLeaderElectionsCount");
+    private static final MetricName ISR_HOLD_BROKER_COUNT = getMetricName(
+        "KafkaController", "IsrHoldBrokerCount");
 
     private static final String TIME_SINCE_LAST_HEARTBEAT_RECEIVED_METRIC_NAME = "TimeSinceLastHeartbeatReceivedMs";
     private static final String BROKER_ID_TAG = "broker";
@@ -95,6 +97,7 @@ public class QuorumControllerMetrics implements AutoCloseable {
     private final AtomicInteger softFencedBrokerCount = new AtomicInteger(0);
     private final AtomicLong softFencedReplicasSkipped = new AtomicLong(0);
     private final AtomicLong softFencedLeaderElections = new AtomicLong(0);
+    private final AtomicInteger isrHoldBrokerCount = new AtomicInteger(0);
     private final Map<Integer, Long> brokerContactTimesMs = new ConcurrentHashMap<>();
     private final int sessionTimeoutMs;
 
@@ -189,6 +192,12 @@ public class QuorumControllerMetrics implements AutoCloseable {
             @Override
             public Long value() {
                 return softFencedLeaderElections();
+            }
+        }));
+        registry.ifPresent(r -> r.newGauge(ISR_HOLD_BROKER_COUNT, new Gauge<Integer>() {
+            @Override
+            public Integer value() {
+                return isrHoldBrokerCount();
             }
         }));
         registry.ifPresent(r -> r.newGauge(AVERAGE_IDLE_RATIO, new Gauge<Double>() {
@@ -347,6 +356,17 @@ public class QuorumControllerMetrics implements AutoCloseable {
         return softFencedLeaderElections.get();
     }
 
+    /**
+     * Set the number of brokers on ISR hold that the active controller is tracking.
+     */
+    public void setIsrHoldBrokerCount(int count) {
+        isrHoldBrokerCount.set(count);
+    }
+
+    public int isrHoldBrokerCount() {
+        return isrHoldBrokerCount.get();
+    }
+
     public void updateBrokerContactTime(int brokerId) {
         brokerContactTimesMs.put(brokerId, time.milliseconds());
     }
@@ -376,6 +396,7 @@ public class QuorumControllerMetrics implements AutoCloseable {
             SOFT_FENCED_BROKER_COUNT,
             SOFT_FENCED_REPLICAS_SKIPPED_COUNT,
             SOFT_FENCED_LEADER_ELECTIONS_COUNT,
+            ISR_HOLD_BROKER_COUNT,
             AVERAGE_IDLE_RATIO
         ).forEach(r::removeMetric));
         removeTimeSinceLastHeartbeatMetrics();

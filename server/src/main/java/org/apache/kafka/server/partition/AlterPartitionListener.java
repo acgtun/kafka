@@ -32,6 +32,12 @@ public interface AlterPartitionListener {
     void markIsrShrink();
 
     /**
+     * Callback invoked when the ISR is expanded with a follower that is on ISR hold, which
+     * happens when the ISR would otherwise be below the minimum size.
+     */
+    void markIsrHoldBypass();
+
+    /**
      * Callback invoked when an AlterPartition request fails.
      */
     void markFailed();

@@ -107,6 +107,10 @@ object Partition {
         replicaManager.isrShrinkRate.mark()
       }
 
+      override def markIsrHoldBypass(): Unit = {
+        replicaManager.isrHoldBypassRate.mark()
+      }
+
       override def markFailed(): Unit = replicaManager.failedIsrUpdatesRate.mark()
     }
 
@@ -1828,7 +1832,11 @@ class Partition(val topicPartition: TopicPartition,
       info(s"ISR updated to ${partitionState.isr.asScala.mkString(",")} ${if (isUnderMinIsr) "(under-min-isr)" else ""} " +
         s"and version updated to $partitionEpoch")
       proposedIsrState match {
-        case _: PendingExpandIsr => alterPartitionListener.markIsrExpand()
+        case pendingExpand: PendingExpandIsr =>
+          alterPartitionListener.markIsrExpand()
+          if (metadataCache.isBrokerOnIsrHold(pendingExpand.newInSyncReplicaId)) {
+            alterPartitionListener.markIsrHoldBypass()
+          }
         case _: PendingShrinkIsr => alterPartitionListener.markIsrShrink()
         case _ =>
       }
