@@ -888,6 +888,11 @@ class Partition(val topicPartition: TopicPartition,
         // check if this replica needs to be added to the ISR
         partitionState match {
           case currentState: CommittedPartitionState if needsExpandIsr(followerReplica) =>
+            // Counted here, not when the response arrives: the response is ignored if the
+            // new ISR reaches this broker in a metadata update first.
+            if (metadataCache.isBrokerOnIsrHold(followerReplica.brokerId)) {
+              alterPartitionListener.markIsrHoldBypass()
+            }
             Some(prepareIsrExpand(currentState, followerReplica.brokerId))
           case _ =>
             None
@@ -1832,11 +1837,7 @@ class Partition(val topicPartition: TopicPartition,
       info(s"ISR updated to ${partitionState.isr.asScala.mkString(",")} ${if (isUnderMinIsr) "(under-min-isr)" else ""} " +
         s"and version updated to $partitionEpoch")
       proposedIsrState match {
-        case pendingExpand: PendingExpandIsr =>
-          alterPartitionListener.markIsrExpand()
-          if (metadataCache.isBrokerOnIsrHold(pendingExpand.newInSyncReplicaId)) {
-            alterPartitionListener.markIsrHoldBypass()
-          }
+        case _: PendingExpandIsr => alterPartitionListener.markIsrExpand()
         case _: PendingShrinkIsr => alterPartitionListener.markIsrShrink()
         case _ =>
       }

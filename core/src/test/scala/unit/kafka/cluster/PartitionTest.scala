@@ -2193,6 +2193,8 @@ class PartitionTest extends AbstractPartitionTest {
     assertEquals(isr.asJava, partition.partitionState.isr)
     assertEquals(replicas.asJava, partition.partitionState.maximalIsr)
     assertEquals(1, alterPartitionManager.isrUpdates.size)
+    assertEquals(0, alterPartitionListener.expands.get)
+    assertEquals(1, alterPartitionListener.isrHoldBypasses.get)
 
     alterPartitionManager.completeIsrUpdate(2)
     assertEquals(replicas.asJava, partition.partitionState.isr)
