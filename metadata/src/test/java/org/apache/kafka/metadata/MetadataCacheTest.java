@@ -773,6 +773,52 @@ public class MetadataCacheTest {
     }
 
     @Test
+    public void testIsBrokerOnIsrHold() {
+        KRaftMetadataCache metadataCache = new KRaftMetadataCache(0, () -> KRaftVersion.KRAFT_VERSION_0);
+        assertFalse(metadataCache.isBrokerOnIsrHold(0));
+
+        MetadataDelta delta = new MetadataDelta.Builder().build();
+        delta.replay(new RegisterBrokerRecord()
+            .setBrokerId(0)
+            .setFenced(true));
+        metadataCache.setImage(delta.apply(MetadataProvenance.EMPTY));
+        assertFalse(metadataCache.isBrokerOnIsrHold(0));
+
+        // The broker is unfenced and put on hold by the same record.
+        delta.replay(new BrokerRegistrationChangeRecord()
+            .setBrokerId(0)
+            .setFenced((byte) -1)
+            .setIsrHold((byte) 1));
+        metadataCache.setImage(delta.apply(MetadataProvenance.EMPTY));
+        assertFalse(metadataCache.isBrokerFenced(0));
+        assertTrue(metadataCache.isBrokerOnIsrHold(0));
+
+        delta.replay(new BrokerRegistrationChangeRecord()
+            .setBrokerId(0)
+            .setIsrHold((byte) -1));
+        metadataCache.setImage(delta.apply(MetadataProvenance.EMPTY));
+        assertFalse(metadataCache.isBrokerOnIsrHold(0));
+
+        // Fencing the broker releases the hold.
+        delta.replay(new BrokerRegistrationChangeRecord()
+            .setBrokerId(0)
+            .setIsrHold((byte) 1));
+        delta.replay(new BrokerRegistrationChangeRecord()
+            .setBrokerId(0)
+            .setFenced((byte) 1));
+        metadataCache.setImage(delta.apply(MetadataProvenance.EMPTY));
+        assertFalse(metadataCache.isBrokerOnIsrHold(0));
+
+        // A registration that is already on hold, as read from a snapshot.
+        delta.replay(new RegisterBrokerRecord()
+            .setBrokerId(1)
+            .setFenced(false)
+            .setIsrHold(true));
+        metadataCache.setImage(delta.apply(MetadataProvenance.EMPTY));
+        assertTrue(metadataCache.isBrokerOnIsrHold(1));
+    }
+
+    @Test
     public void testIsBrokerInControlledShutdown() {
         KRaftMetadataCache metadataCache = new KRaftMetadataCache(0, () -> KRaftVersion.KRAFT_VERSION_0);
 

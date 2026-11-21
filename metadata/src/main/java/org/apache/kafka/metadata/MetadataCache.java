@@ -77,6 +77,12 @@ public interface MetadataCache extends ConfigRepository {
 
     boolean isBrokerShuttingDown(int brokerId);
 
+    /**
+     * Check if a broker is on ISR hold. Partition leaders do not add such a broker to the ISR
+     * unless the ISR is below the minimum size.
+     */
+    boolean isBrokerOnIsrHold(int brokerId);
+
     Uuid getTopicId(String topicName);
 
     Optional<String> getTopicName(Uuid topicId);
