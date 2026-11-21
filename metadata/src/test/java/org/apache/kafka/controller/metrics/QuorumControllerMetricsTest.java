@@ -49,6 +49,7 @@ public class QuorumControllerMetricsTest {
                     "kafka.controller:type=KafkaController,name=ActiveControllerCount",
                     "kafka.controller:type=KafkaController,name=EventQueueOperationsStartedCount",
                     "kafka.controller:type=KafkaController,name=EventQueueOperationsTimedOutCount",
+                    "kafka.controller:type=KafkaController,name=IsrHoldBrokerCount",
                     "kafka.controller:type=KafkaController,name=LastAppliedRecordLagMs",
                     "kafka.controller:type=KafkaController,name=LastAppliedRecordOffset",
                     "kafka.controller:type=KafkaController,name=LastAppliedRecordTimestamp",
@@ -79,6 +80,13 @@ public class QuorumControllerMetricsTest {
             metrics.incrementSoftFencedReplicasSkipped();
             metrics.incrementSoftFencedReplicasSkipped();
             metrics.incrementSoftFencedLeaderElections();
+            metrics.setIsrHoldBrokerCount(1);
+
+            @SuppressWarnings("unchecked")
+            Gauge<Integer> isrHoldBrokerCount = (Gauge<Integer>) registry
+                .allMetrics()
+                .get(metricName("KafkaController", "IsrHoldBrokerCount"));
+            assertEquals(1, isrHoldBrokerCount.value());
 
             @SuppressWarnings("unchecked")
             Gauge<Integer> softFencedBrokerCount = (Gauge<Integer>) registry

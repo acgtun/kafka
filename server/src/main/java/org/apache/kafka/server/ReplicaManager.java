@@ -38,6 +38,8 @@ public final class ReplicaManager {
     public static final String ISR_EXPANDS_PER_SEC = "IsrExpandsPerSec";
     public static final String ISR_SHRINKS_PER_SEC = "IsrShrinksPerSec";
     public static final String FAILED_ISR_UPDATES_PER_SEC = "FailedIsrUpdatesPerSec";
+    public static final String OUT_OF_SYNC_FOLLOWER_PARTITION_COUNT = "OutOfSyncFollowerPartitionCount";
+    public static final String ISR_HOLD_BYPASSES_PER_SEC = "IsrHoldBypassesPerSec";
 
     public static final Set<String> GAUGE_METRIC_NAMES = Set.of(
         LEADER_COUNT,
@@ -48,13 +50,15 @@ public final class ReplicaManager {
         AT_MIN_ISR_PARTITION_COUNT,
         REASSIGNING_PARTITIONS,
         PARTITIONS_WITH_LATE_TRANSACTIONS_COUNT,
-        PRODUCER_ID_COUNT
+        PRODUCER_ID_COUNT,
+        OUT_OF_SYNC_FOLLOWER_PARTITION_COUNT
     );
 
     public static final Set<String> METER_METRIC_NAMES = Set.of(
         ISR_EXPANDS_PER_SEC,
         ISR_SHRINKS_PER_SEC,
-        FAILED_ISR_UPDATES_PER_SEC
+        FAILED_ISR_UPDATES_PER_SEC,
+        ISR_HOLD_BYPASSES_PER_SEC
     );
 
     public static final Set<String> ALL_METRIC_NAMES = Stream.concat(GAUGE_METRIC_NAMES.stream(), METER_METRIC_NAMES.stream())

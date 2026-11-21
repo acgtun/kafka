@@ -455,7 +455,7 @@ public class ReplicationControlManager {
         this.directoriesToPartitions = new TimelineHashMap<>(snapshotRegistry, 0);
         this.outOfSyncReplicaCounts = new TimelineHashMap<>(snapshotRegistry, 0);
         this.softFenceManager = new SoftFenceManager(logContext, clusterControl.metrics());
-        this.isrHoldManager = new IsrHoldManager(logContext);
+        this.isrHoldManager = new IsrHoldManager(logContext, clusterControl.metrics());
         this.metadataLagTracker = new MetadataLagTracker();
     }
 

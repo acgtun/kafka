@@ -156,8 +156,11 @@ class AbstractPartitionTest {
     val expands: AtomicInteger = new AtomicInteger(0)
     val shrinks: AtomicInteger = new AtomicInteger(0)
     val failures: AtomicInteger = new AtomicInteger(0)
+    val isrHoldBypasses: AtomicInteger = new AtomicInteger(0)
 
     override def markIsrExpand(): Unit = expands.incrementAndGet()
+
+    override def markIsrHoldBypass(): Unit = isrHoldBypasses.incrementAndGet()
 
     override def markIsrShrink(): Unit = shrinks.incrementAndGet()
 
@@ -168,6 +171,7 @@ class AbstractPartitionTest {
       expands.set(0)
       shrinks.set(0)
       failures.set(0)
+      isrHoldBypasses.set(0)
     }
   }
 }
