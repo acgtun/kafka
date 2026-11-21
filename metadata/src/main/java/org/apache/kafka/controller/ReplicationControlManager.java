@@ -1038,7 +1038,7 @@ public class ReplicationControlManager {
         return ApiError.NONE;
     }
 
-    private static PartitionRegistration buildPartitionRegistration(
+    private PartitionRegistration buildPartitionRegistration(
         PartitionAssignment partitionAssignment,
         List<Integer> isr
     ) {
@@ -1046,11 +1046,28 @@ public class ReplicationControlManager {
             setReplicas(Replicas.toArray(partitionAssignment.replicas())).
             setDirectories(Uuid.toArray(partitionAssignment.directories())).
             setIsr(Replicas.toArray(isr)).
-            setLeader(isr.get(0)).
+            setLeader(firstLeader(isr)).
             setLeaderRecoveryState(LeaderRecoveryState.RECOVERED).
             setLeaderEpoch(0).
             setPartitionEpoch(0).
             build();
+    }
+
+    /**
+     * Choose the first leader of a new partition: the first replica in the ISR that is not
+     * soft-fenced, or the first replica in the ISR if all of them are.
+     */
+    private int firstLeader(List<Integer> isr) {
+        for (int replica : isr) {
+            if (!softFenceManager.isSoftFenced(replica)) {
+                if (replica != isr.get(0)) {
+                    softFenceManager.softFencedReplicaSkipped();
+                }
+                return replica;
+            }
+        }
+        softFenceManager.softFencedLeaderElected();
+        return isr.get(0);
     }
 
     private ApiError maybeCheckCreateTopicPolicy(Supplier<CreateTopicPolicy.RequestMetadata> supplier) {
